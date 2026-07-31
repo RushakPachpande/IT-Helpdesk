@@ -4,19 +4,19 @@ overview: Design one production n8n IT helpdesk workflow (Outlook Trigger → Ex
 todos:
   - id: workbook
     content: Create openpyxl script that generates IT_Support_Tickets.xlsx (Tickets table, Config, Categories, Users, Dashboard, AuditLog, Reports, dropdowns, conditional formatting)
-    status: pending
+    status: completed
   - id: main-workflow
     content: "Build single IT_Ticketing_Main.json: Outlook Trigger → filter → ConversationID dedupe → NGI-ddmmyy-XXXX + uniqueness → Excel create → ReplyAll → folder moves"
-    status: pending
+    status: completed
   - id: error-workflow
     content: Build IT_Ticketing_Error_Notifier.json (Error Trigger → format → admin email)
-    status: pending
+    status: completed
   - id: guide
     content: "Write WORKFLOW_GUIDE.md: prerequisites, architecture, node-by-node debug map, expressions, concurrency/idempotency explanation"
-    status: pending
+    status: completed
   - id: align-prompt
     content: Verify checklist against TicketingPrompt.md (CC, folders, ID format, Excel columns, error handling, no Schedule on Main)
-    status: pending
+    status: completed
 isProject: false
 ---
 
