@@ -1,28 +1,59 @@
 ---
-description: Ask clarifying questions before starting work when context is incomplete
+description: Ask for clarification before generating when requirements are incomplete or ambiguous
 alwaysApply: true
 ---
 
 # Clarify Before Acting
 
-Do not start implementing, planning in depth, or making irreversible changes when important context is missing. Ask first — in every mode (Agent, Plan, Ask, Debug, or otherwise).
+Do not start implementing, planning in depth, generating code/workflows/docs, or making irreversible changes when important context is missing. Ask first — in every mode (Agent, Plan, Ask, Debug, or otherwise).
+
+Before producing substantial output:
+
+- Analyze the request for ambiguity, missing requirements, or conflicting instructions.
+- If more information would materially improve quality, correctness, or relevance, ask first.
+- Ask only the minimum number of questions needed; group related ones in one turn.
+- Wait for the user's response before generating the final output.
+- Never silently invent requirements.
 
 ## When to ask
 
-Ask before proceeding if any of the following are unclear:
+Ask when any of the following apply:
 
-- Goal, success criteria, or constraints
-- Scope (what is in vs out)
-- Preferred approach when multiple valid options exist
-- Target files, APIs, designs, copy, or data the user did not provide
-- Acceptance criteria that would change the output meaningfully
+- Goal, success criteria, constraints, or scope are unclear
+- Requirements are incomplete or conflicting
+- Multiple valid implementations or approaches exist
+- Important technical details are missing (tech, versions, APIs, integrations)
+- Target files, APIs, designs, copy, or data were not provided
+- Expected behavior or edge cases are undefined
+- Project structure or conventions are unknown and would change the approach
+- The change could affect existing functionality
+- Acceptance criteria that would change the output meaningfully are missing
+- Assumptions would likely produce an incorrect or suboptimal solution
+
+## When not to ask
+
+Do **not** ask when:
+
+- The request is clear and unambiguous
+- Missing details have obvious industry-standard defaults
+- Clarification would not materially change the implementation
+- The user explicitly authorizes reasonable assumptions
+- The request is already specific enough to produce a correct result
+
+Do not delay obvious, well-scoped work with ritual questions.
 
 ## How to ask
 
-- Ask focused questions early (batch related ones in one turn)
-- Prefer concrete options when helpful (A vs B) over open-ended prompts
-- State what you will assume only if the user wants you to proceed without answering
+- Short, specific, actionable; highest impact first
+- Prefer concrete options (A vs B) over open-ended prompts when helpful
 - After answers, confirm understanding briefly, then act
+
+## Assumptions
+
+If assumptions are unavoidable:
+
+- Clearly list each assumption and why it was made
+- Continue only if the risk of an incorrect result is low
 
 ## Examples
 
@@ -34,6 +65,6 @@ Ask before proceeding if any of the following are unclear:
 ✅ GOOD: Ask provider preference, session vs JWT, and which pages need protection
 ```
 
-## Exception
+## Goal
 
-If the request is already specific enough to produce a correct result, proceed without ritual questions. Do not delay obvious, well-scoped work.
+Prioritize correctness and relevance over immediate output. A few clarification tokens beat a wrong solution that wastes many more on revisions.

@@ -1,0 +1,79 @@
+---
+description: Always use official documentation as the authoritative source before generating implementations
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# Official Documentation First
+
+Before generating code, workflows, configurations, or technical implementations, always use the official documentation of the relevant tool, framework, SDK, API, or platform as the primary reference.
+
+Do not rely solely on prior knowledge or assumptions when official documentation is available.
+
+## Rule
+
+For every implementation:
+
+- Identify the technologies involved.
+- Consult the latest official documentation before producing the implementation.
+- Ensure the generated output conforms to the documented behavior, syntax, capabilities, limitations, and best practices.
+- If the documentation conflicts with prior knowledge, always follow the documentation.
+- Never invent features, parameters, node properties, or APIs that are not documented.
+
+## Accuracy Requirements
+
+Always verify:
+
+- Available nodes, functions, methods, and operations.
+- Required and optional parameters.
+- Configuration options.
+- Input and output schemas.
+- Return values.
+- Execution behavior.
+- Version-specific behavior.
+- Breaking changes.
+- Known limitations.
+
+## Workflow & Visual Editors
+
+For workflow automation platforms (such as n8n), pay special attention to:
+
+- Node input/output ports.
+- Branch ordering.
+- Multi-output nodes (e.g. IF, Switch, Loop, Merge).
+- Execution paths.
+- Required connections.
+- Node compatibility.
+- Data structures passed between nodes.
+- Expressions and variable syntax.
+- JSON schema expected by the platform.
+
+Never assume the ordering or indexing of outputs. Verify them against the official documentation before generating or modifying workflows.
+
+## Version Awareness
+
+Always generate implementations compatible with the project's specified version.
+
+If the version is unknown and behavior may differ between versions, ask for the version before proceeding.
+
+## Missing Information
+
+If the official documentation does not clearly answer a requirement:
+
+- State that the behavior is undocumented or uncertain.
+- Avoid guessing.
+- Offer the closest documented alternative.
+
+## Priority
+
+When multiple sources disagree, use the following priority:
+
+1. Official documentation
+2. Official examples
+3. Official release notes/changelogs
+4. Community documentation
+5. General knowledge
+
+## Goal
+
+Maximize correctness and minimize implementation errors by treating the official documentation as the authoritative source for every technical decision.

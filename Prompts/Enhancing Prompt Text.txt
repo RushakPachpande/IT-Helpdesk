@@ -1,0 +1,24 @@
+With this current work flow, I notice that there are some concerning points that I noticed myself during the test runs.
+1. If the workflow fails mid way, the track is lost, the ticket is lost. It never gets considered again. It can fail at any point leaving the ticketing system flawed. Even if it generates a ticket id but fails to send the mail, next time it will not consider that again as the excel already has the row, so IT support thinks the person has got the ticket id while the person hasn't got that really.
+
+2. The lock acquiring... I don't get what it does? It put the locked status but never puts unlocked back. Also, I think myself that is it actually needed? Because the excel sheet is getting long.
+
+3. I personally think there must only be 3 folders. Inbox itself, Processed, and the Open Tickets. No un-necessary complexity. Moving the mails to these folders logically must be deficned in the flow.
+
+4. A free AI node that summarizes the mail context in short but descriptive way to let the IT Admin understand the request in simple terms. (Because as per my personal experinece, sometimes non-tech users complicate the query in such a way because they cannot explain it technically so they eggagrate as the problem is very severe and while for the IT admin, it is a very simple solution. So I think an AI model will be helpful in the middle to summarize the mail content.)
+
+    ===== AI Prompt to summarize the emails =====
+
+    You are an IT Support Assistant. Analyze the following email subject and body. 
+    Provide a clear, 2-3 sentence summary for the IT Engineer/Executive/Admin.
+
+    Format your output exactly like this:
+    - Issue: [Short summary of the core problem]
+    - Urgency/Priority: [Low/Medium/High/Critical based on the text (default Medium)]
+    - Scope: [Affected user, software, or hardware device]
+
+    Email Content:
+    Subject: {{ $json.subject }}
+    Body: {{ $json.body }}
+    
+These details must be stored properly in respective excel row for the IT person reference later.
