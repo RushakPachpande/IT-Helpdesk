@@ -1,0 +1,42 @@
+---
+description: Never access real environment files; use .env.example only
+alwaysApply: true
+---
+
+# Environment File Access Ban
+
+You are **completely restricted** from accessing real environment files in any form.
+
+## Forbidden
+
+Never open, read, write, edit, delete, search, print, or otherwise touch:
+
+- `.env`
+- `.env.local`, `.env.development`, `.env.production`, `.env.test`
+- Any file matching `.env.*` that is **not** an example template
+
+Do **not** access them via:
+
+- Read / Write / StrReplace / Delete tools
+- Grep, Glob, Find, ripgrep, or codebase search
+- Shell (`cat`, `type`, `Get-Content`, `echo >>`, `cp`, `mv`, editors, etc.)
+- Diffs, commits, or staging that include these files (warn the user; do not inspect contents)
+
+## Allowed
+
+- `.env.example`, `.env*.example`, and similar **template** files only
+- Use those templates for variable **names and structure** (never invent secrets)
+- If a template is missing and env vars are needed, create or update `.env.example` with placeholder values only
+
+## Examples
+
+```
+❌ BAD: Read .env to see which keys exist
+✅ GOOD: Read .env.example for key names and shape
+
+❌ BAD: grep / find / cat .env or .env.local
+✅ GOOD: Refer to .env.example; ask the user if a value is missing
+
+❌ BAD: Write secrets into .env
+✅ GOOD: Document required keys in .env.example; user fills real values locally
+```

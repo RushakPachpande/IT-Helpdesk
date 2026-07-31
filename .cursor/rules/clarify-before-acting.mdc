@@ -1,0 +1,39 @@
+---
+description: Ask clarifying questions before starting work when context is incomplete
+alwaysApply: true
+---
+
+# Clarify Before Acting
+
+Do not start implementing, planning in depth, or making irreversible changes when important context is missing. Ask first — in every mode (Agent, Plan, Ask, Debug, or otherwise).
+
+## When to ask
+
+Ask before proceeding if any of the following are unclear:
+
+- Goal, success criteria, or constraints
+- Scope (what is in vs out)
+- Preferred approach when multiple valid options exist
+- Target files, APIs, designs, copy, or data the user did not provide
+- Acceptance criteria that would change the output meaningfully
+
+## How to ask
+
+- Ask focused questions early (batch related ones in one turn)
+- Prefer concrete options when helpful (A vs B) over open-ended prompts
+- State what you will assume only if the user wants you to proceed without answering
+- After answers, confirm understanding briefly, then act
+
+## Examples
+
+```
+❌ BAD: User says "improve the hero" → immediately rewrite layout and copy
+✅ GOOD: Ask which goal (conversion, clarity, brand), constraints, and whether copy may change
+
+❌ BAD: User says "add auth" → scaffold a full auth stack
+✅ GOOD: Ask provider preference, session vs JWT, and which pages need protection
+```
+
+## Exception
+
+If the request is already specific enough to produce a correct result, proceed without ritual questions. Do not delay obvious, well-scoped work.

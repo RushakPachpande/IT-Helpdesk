@@ -1,0 +1,2542 @@
+{
+  "name": "IT Ticketing - Core Processor",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "c01",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -9800,
+        2400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Extract, Filter, Tag & Sanitize -- single email in, single item out.\n// This node is deliberately trigger-agnostic: it only assumes the input\n// is a Microsoft Graph \"message\" resource, so it works identically whether\n// it was handed to us by the Outlook Trigger (real-time) or by the\n// Reconciliation workflow's getAll (safety net).\n// ============================================================\nconst item = $input.first().json;\n\nconst SELF_SENDER_MATCHES = [\n  \"itsupport@nextgeninnov8.com\",\n  \"itsupport_nextgeninnov8_com\"\n];\n\nconst AUTO_REPLY_SUBJECT_PREFIXES = [\n  \"automatic reply:\", \"auto:\", \"out of office\", \"undeliverable:\",\n  \"read:\", \"delivery status notification\", \"mail delivery failed\"\n];\n\nconst HIGH_PRIORITY_KEYWORDS = [\n  \"urgent\", \"asap\", \"critical\", \"down\", \"outage\", \"emergency\",\n  \"not working\", \"cannot work\", \"can't work\", \"blocked\",\n  \"security breach\", \"breach\", \"data loss\", \"production down\",\n  \"server down\", \"all hands\", \"cannot access\", \"can't access\"\n];\n\nconst LOW_PRIORITY_KEYWORDS = [\n  \"whenever\", \"no rush\", \"minor\", \"question\", \"inquiry\",\n  \"when you get a chance\", \"low priority\", \"just curious\", \"fyi\"\n];\n\nfunction detectPriority(subject, body) {\n  const text = `${subject} ${body}`.toLowerCase();\n  if (HIGH_PRIORITY_KEYWORDS.some((k) => text.includes(k))) return \"High\";\n  if (LOW_PRIORITY_KEYWORDS.some((k) => text.includes(k))) return \"Low\";\n  return \"Medium\";\n}\n\nfunction isSelfSent(senderEmail) {\n  const lower = (senderEmail || \"\").toLowerCase();\n  return SELF_SENDER_MATCHES.some((s) => lower.includes(s.toLowerCase()));\n}\n\nfunction isAutoReply(subject) {\n  const lower = (subject || \"\").trim().toLowerCase();\n  return AUTO_REPLY_SUBJECT_PREFIXES.some((prefix) => lower.startsWith(prefix));\n}\n\n// --- Sender ---\nconst fromObj = item.from || item.sender || {};\nconst emailAddrObj = fromObj.emailAddress || fromObj;\nlet senderEmail = \"\";\nif (typeof emailAddrObj === \"string\") {\n  senderEmail = emailAddrObj;\n} else {\n  senderEmail = emailAddrObj.address || emailAddrObj.email || fromObj.address || \"\";\n}\nlet senderName = \"\";\nif (typeof emailAddrObj === \"object\") {\n  senderName = emailAddrObj.name || fromObj.name || \"\";\n}\nif (!senderName || senderName.trim() === \"\" || senderName === senderEmail) {\n  if (senderEmail && senderEmail.includes(\"@\")) {\n    const namePart = senderEmail.split(\"@\")[0];\n    senderName = namePart.replace(/[._-]/g, \" \").replace(/\\b\\w/g, (c) => c.toUpperCase());\n  } else {\n    senderName = \"Valued User\";\n  }\n}\n\n// --- CC recipients (preserved for the acknowledgement + stored for traceability) ---\nconst ccEmails = (item.ccRecipients || [])\n  .map((r) => {\n    const addr = r.emailAddress || r;\n    return addr.address || addr.email || \"\";\n  })\n  .filter(Boolean)\n  .join(\"; \");\n\n// --- Action decision ---\nlet action = \"process\";\nlet dropReason = null;\nif (isSelfSent(senderEmail)) {\n  action = \"drop\";\n  dropReason = \"Self-sent (loop prevention)\";\n} else if (isAutoReply(item.subject)) {\n  action = \"drop\";\n  dropReason = \"Automated/system message (out-of-office, bounce, read receipt, etc.)\";\n}\n\n// --- Sanitize body ---\nlet rawBody = item.bodyPreview || item.body?.content || \"\";\nlet cleanedBody = rawBody\n  .replace(/<style[^>]*>[\\s\\S]*?<\\/style>/gi, \"\")\n  .replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, \"\")\n  .replace(/<[^>]*>/g, \"\")\n  .replace(/\\r\\n/g, \"\\n\")\n  .replace(/\\r/g, \"\\n\")\n  .split(\"\\n\").map((l) => l.trim()).filter((l) => l.length > 0).join(\"\\n\\n\");\nif (cleanedBody.length > 1500) cleanedBody = cleanedBody.substring(0, 1497) + \"...\";\n\nconst priority = action === \"process\" ? detectPriority(item.subject || \"\", cleanedBody) : null;\n\nreturn {\n  json: {\n    messageId: item.id,\n    conversationId: item.conversationId,\n    internetMessageId: item.internetMessageId,\n    conversationIndex: item.conversationIndex || \"\",\n    subject: item.subject || \"(no subject)\",\n    senderName,\n    senderEmail,\n    ccEmails,\n    bodyPreview: cleanedBody || \"(no content)\",\n    receivedDateTime: item.receivedDateTime || item.createdDateTime,\n    priority,\n    action,\n    dropReason\n  }\n};\n"
+      },
+      "id": "c02",
+      "name": "Extract, Filter, Tag & Sanitize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9580,
+        2400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "process",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c03",
+      "name": "IF - Should Process This Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -9360,
+        2400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "append",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Timestamp",
+              "fieldValue": "={{ $now.toFormat('dd-MM-yyyy hh:mm a') }}"
+            },
+            {
+              "column": "MessageId",
+              "fieldValue": "={{ $json.messageId }}"
+            },
+            {
+              "column": "ConversationID",
+              "fieldValue": "={{ $json.conversationId }}"
+            },
+            {
+              "column": "SenderEmail",
+              "fieldValue": "={{ $json.senderEmail }}"
+            },
+            {
+              "column": "Subject",
+              "fieldValue": "={{ $json.subject }}"
+            },
+            {
+              "column": "Action",
+              "fieldValue": "Dropped"
+            },
+            {
+              "column": "Reason",
+              "fieldValue": "={{ $json.dropReason }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c04",
+      "name": "Log Dropped Email (Audit)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -9140,
+        2560
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "Filtered"
+        }
+      },
+      "id": "c05",
+      "name": "Move Filtered Email to Filtered",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        -8920,
+        2560
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Anchor node for this item's entire processing lifecycle.\n// Every later node recovers stable business fields via\n// $('Generate Lock Token').item.json rather than relying on passthrough,\n// because the Excel/Outlook API-call nodes further down each replace\n// $json with their own response and would otherwise wipe this data.\nconst item = $input.first().json;\nconst lockToken = `${$execution.id}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;\nreturn { json: { ...item, lockToken, lockAttempt: 0 } };\n"
+      },
+      "id": "c06",
+      "name": "Generate Lock Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9140,
+        2260
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "lookup",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "WorkflowLocks"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "WorkflowLocks"
+        },
+        "lookupColumn": "LockID",
+        "lookupValue": "MAIN",
+        "options": {
+          "returnAllMatches": false
+        }
+      },
+      "id": "c07",
+      "name": "Read Lock Status",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -8920,
+        2260
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Runs right after \"Read Lock Status\" (an Excel Lookup, which replaced\n// $json with just the lock row). Recover the retry counter from\n// \"Wait Before Retry\" if we've looped at least once; default to 0 on\n// the very first pass, when that node hasn't executed yet in this run.\nconst lockRow = $input.first().json;\n\nlet priorAttempt = 0;\ntry {\n  priorAttempt = $('Wait Before Retry').item.json.lockAttempt || 0;\n} catch (e) {\n  priorAttempt = 0; // first pass -- Wait Before Retry hasn't run yet\n}\n\nconst STALE_MS = 30 * 1000; // critical section is short; 30s means the previous holder crashed.\nconst lockedAt = lockRow.LockedAt ? new Date(lockRow.LockedAt).getTime() : null;\nconst isLocked = lockRow.LockStatus === \"Locked\";\nconst ageMs = lockedAt ? Date.now() - lockedAt : Infinity;\nconst isStale = ageMs > STALE_MS;\nconst isAvailable = !isLocked || isStale;\n\nreturn { json: { isAvailable, lockAttempt: priorAttempt } };\n"
+      },
+      "id": "c08",
+      "name": "Evaluate Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -8700,
+        2260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.isAvailable }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c09",
+      "name": "IF - Lock Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -8480,
+        2260
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "update",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "WorkflowLocks"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "WorkflowLocks"
+        },
+        "columnToMatchOn": "LockID",
+        "valueToMatchOn": "MAIN",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "LockStatus",
+              "fieldValue": "Locked"
+            },
+            {
+              "column": "LockOwner",
+              "fieldValue": "={{ $('Generate Lock Token').item.json.lockToken }}"
+            },
+            {
+              "column": "LockedAt",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c10",
+      "name": "Attempt Acquire Lock",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -8260,
+        2160
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "lookup",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "WorkflowLocks"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "WorkflowLocks"
+        },
+        "lookupColumn": "LockID",
+        "lookupValue": "MAIN",
+        "options": {
+          "returnAllMatches": false
+        }
+      },
+      "id": "c11",
+      "name": "Verify Lock Ownership",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -8040,
+        2160
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Runs right after \"Verify Lock Ownership\" (Excel Lookup). \"Evaluate Lock\"\n// always executes immediately before this in every single pass of this\n// loop, so referencing it by name is unambiguous (not a self-reference).\nconst verifyRow = $input.first().json;\nconst myToken = $('Generate Lock Token').item.json.lockToken;\nconst lockAttempt = $('Evaluate Lock').item.json.lockAttempt || 0;\nconst ownershipConfirmed = verifyRow.LockOwner === myToken;\nreturn { json: { ownershipConfirmed, lockAttempt } };\n"
+      },
+      "id": "c12",
+      "name": "Evaluate Ownership",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7820,
+        2160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c3",
+              "leftValue": "={{ $json.ownershipConfirmed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c13",
+      "name": "IF - Ownership Confirmed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -7600,
+        2160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reached from either \"lock not available\" or \"lost the ownership race\".\n// Both predecessors pass lockAttempt through untouched (IF nodes don't\n// transform data), so we can read it straight off the input.\nconst priorAttempt = $input.first().json.lockAttempt || 0;\nconst attempt = priorAttempt + 1;\n\nconst MAX_ATTEMPTS = 10;\nconst BASE_MS = 500;\nconst CAP_MS = 3000;\nconst jitter = Math.floor(Math.random() * 250);\nconst waitMs = Math.min(BASE_MS * Math.pow(2, priorAttempt), CAP_MS) + jitter;\nconst exceededMax = attempt >= MAX_ATTEMPTS;\n\nreturn { json: { lockAttempt: attempt, waitMs, exceededMax } };\n"
+      },
+      "id": "c14",
+      "name": "Prepare Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -8260,
+        2380
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c4",
+              "leftValue": "={{ $json.exceededMax }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c15",
+      "name": "IF - Exceeded Max Attempts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -8040,
+        2380
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "append",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Timestamp",
+              "fieldValue": "={{ $now.toFormat('dd-MM-yyyy hh:mm a') }}"
+            },
+            {
+              "column": "MessageId",
+              "fieldValue": "={{ $json.messageId }}"
+            },
+            {
+              "column": "ConversationID",
+              "fieldValue": "={{ $json.conversationId }}"
+            },
+            {
+              "column": "SenderEmail",
+              "fieldValue": "={{ $json.senderEmail }}"
+            },
+            {
+              "column": "Subject",
+              "fieldValue": "={{ $json.subject }}"
+            },
+            {
+              "column": "Action",
+              "fieldValue": "LockTimeout"
+            },
+            {
+              "column": "Reason",
+              "fieldValue": "Could not acquire processing lock after max retry attempts -- possible sustained high concurrency or a stuck lock."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c16",
+      "name": "Log Lock Contention Failure (Audit)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -7820,
+        2480
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $('Generate Lock Token').item.json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "NeedsManualCreation"
+        }
+      },
+      "id": "c17",
+      "name": "Move to NeedsManualCreation (Lock Timeout)",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        -7600,
+        2480
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.max(1, Math.ceil($json.waitMs / 1000)) }}",
+        "unit": "seconds"
+      },
+      "id": "c18",
+      "name": "Wait Before Retry",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -7820,
+        2280
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "lookup",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0000-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "IT_Tickets"
+        },
+        "lookupColumn": "ConversationID",
+        "lookupValue": "={{ $('Generate Lock Token').item.json.conversationId }}",
+        "options": {
+          "returnAllMatches": true
+        }
+      },
+      "id": "c19",
+      "name": "Excel - Lookup by ConversationID",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -7380,
+        2160
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "lookup",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0000-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "IT_Tickets"
+        },
+        "lookupColumn": "InternetMessageId",
+        "lookupValue": "={{ $('Generate Lock Token').item.json.internetMessageId }}",
+        "options": {
+          "returnAllMatches": true
+        }
+      },
+      "id": "c20",
+      "name": "Excel - Lookup by InternetMessageId",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -7160,
+        2160
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dual-key dedupe: existing ticket if EITHER ConversationID OR\n// InternetMessageId matched. Guards against Graph occasionally not\n// populating conversationId consistently across a thread.\nconst anchor = $('Generate Lock Token').item.json;\nconst convMatch = $('Excel - Lookup by ConversationID').first();\nconst msgIdMatch = $('Excel - Lookup by InternetMessageId').first();\n\nfunction hasTicket(m) {\n  return Boolean(m && m.json && (m.json.TicketID || m.json.ConversationID));\n}\nconst existsByConv = hasTicket(convMatch);\nconst existsByMsgId = hasTicket(msgIdMatch);\nconst ticketExists = existsByConv || existsByMsgId;\nconst existingTicketId =\n  (convMatch && convMatch.json && convMatch.json.TicketID) ||\n  (msgIdMatch && msgIdMatch.json && msgIdMatch.json.TicketID) ||\n  null;\n\nreturn { json: { ...anchor, ticketExists, existingTicketId } };\n"
+      },
+      "id": "c21",
+      "name": "Check If Ticket Exists",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6940,
+        2160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c5",
+              "leftValue": "={{ $json.ticketExists }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c22",
+      "name": "IF - Ticket Already Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -6720,
+        2160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nreturn { json: { ...item, outcome: \"duplicate_thread\" } };\n"
+      },
+      "id": "c23",
+      "name": "Set Outcome - Duplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6500,
+        2040
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// NGI-<ddmmyy>-<XXXX> where XXXX is a random 4-char uppercase alnum string.\n// innerAttempt is read from whatever fed us: on the first pass that's\n// \"IF - Ticket Already Exists?\" (no innerAttempt field -> defaults to 0);\n// on a retry pass it's \"IF - Collision And Retry?\" carrying the value\n// forward from \"Check Ticket ID Collision\" untouched.\nconst anchor = $('Generate Lock Token').item.json;\nconst innerAttempt = $input.first().json.innerAttempt || 0;\n\nconst now = new Date();\nconst dd = String(now.getDate()).padStart(2, \"0\");\nconst mm = String(now.getMonth() + 1).padStart(2, \"0\");\nconst yy = String(now.getFullYear()).slice(-2);\n\nconst charset = \"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\";\nlet suffix = \"\";\nfor (let i = 0; i < 4; i++) suffix += charset[Math.floor(Math.random() * charset.length)];\nconst candidateTicketId = `NGI-${dd}${mm}${yy}-${suffix}`;\n\nreturn { json: { ...anchor, candidateTicketId, innerAttempt } };\n"
+      },
+      "id": "c24",
+      "name": "Generate Candidate Ticket ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6500,
+        2260
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "lookup",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0000-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "IT_Tickets"
+        },
+        "lookupColumn": "TicketID",
+        "lookupValue": "={{ $json.candidateTicketId }}",
+        "options": {
+          "returnAllMatches": false
+        }
+      },
+      "id": "c25",
+      "name": "Excel - Lookup TicketID Uniqueness",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -6280,
+        2260
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Runs right after \"Excel - Lookup TicketID Uniqueness\". The candidate\n// generator always executes immediately before that lookup in every\n// pass, so referencing it by name to recover context is unambiguous.\nconst lookupResult = $input.first();\nconst genNode = $('Generate Candidate Ticket ID').item.json;\nconst priorAttempt = genNode.innerAttempt || 0;\nconst attempt = priorAttempt + 1;\n\nconst MAX_INNER_ATTEMPTS = 10; // 36^4 = 1,679,616 combos/day -- this ceiling is just a circuit breaker.\nconst collision = Boolean(lookupResult && lookupResult.json && lookupResult.json.TicketID);\nconst exceededMax = attempt >= MAX_INNER_ATTEMPTS;\n\nreturn {\n  json: {\n    ...$('Generate Lock Token').item.json,\n    candidateTicketId: genNode.candidateTicketId,\n    innerAttempt: attempt,\n    collision,\n    exceededMax\n  }\n};\n"
+      },
+      "id": "c26",
+      "name": "Check Ticket ID Collision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6060,
+        2260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c6a",
+              "leftValue": "={{ $json.collision }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "c6b",
+              "leftValue": "={{ $json.exceededMax }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c27",
+      "name": "IF - Collision And Retry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -5840,
+        2260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c7",
+              "leftValue": "={{ $json.exceededMax }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c28",
+      "name": "IF - ID Attempts Exhausted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -5620,
+        2380
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nreturn { json: { ...item, outcome: \"ticket_id_exhausted\" } };\n"
+      },
+      "id": "c29",
+      "name": "Set Outcome - ID Exhausted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5400,
+        2480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst errors = [];\nif (!item.candidateTicketId) errors.push(\"Missing candidateTicketId\");\nif (!item.senderEmail || !item.senderEmail.includes(\"@\")) errors.push(\"Invalid senderEmail\");\nif (!item.messageId) errors.push(\"Missing messageId\");\nif (!item.conversationId) errors.push(\"Missing conversationId\");\nif (!item.subject) errors.push(\"Missing subject\");\nreturn { json: { ...item, isValid: errors.length === 0, validationErrors: errors.join(\"; \") } };\n"
+      },
+      "id": "c30",
+      "name": "Data Guard Validation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5400,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c8",
+              "leftValue": "={{ $json.isValid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c31",
+      "name": "IF - Valid Ticket Data?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -5180,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "append",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0000-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "IT_Tickets"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "TicketID",
+              "fieldValue": "={{ $json.candidateTicketId }}"
+            },
+            {
+              "column": "ConversationID",
+              "fieldValue": "={{ $json.conversationId }}"
+            },
+            {
+              "column": "InternetMessageId",
+              "fieldValue": "={{ $json.messageId }}"
+            },
+            {
+              "column": "ConversationIndex",
+              "fieldValue": "={{ $json.conversationIndex }}"
+            },
+            {
+              "column": "Subject",
+              "fieldValue": "={{ $json.subject }}"
+            },
+            {
+              "column": "RequesterName",
+              "fieldValue": "={{ $json.senderName }}"
+            },
+            {
+              "column": "RequesterEmail",
+              "fieldValue": "={{ $json.senderEmail }}"
+            },
+            {
+              "column": "CCEmails",
+              "fieldValue": "={{ $json.ccEmails }}"
+            },
+            {
+              "column": "EmailBody",
+              "fieldValue": "={{ $json.bodyPreview }}"
+            },
+            {
+              "column": "Priority",
+              "fieldValue": "={{ $json.priority }}"
+            },
+            {
+              "column": "Category",
+              "fieldValue": "Unclassified"
+            },
+            {
+              "column": "Department",
+              "fieldValue": ""
+            },
+            {
+              "column": "Status",
+              "fieldValue": "New"
+            },
+            {
+              "column": "AssignedEngineer",
+              "fieldValue": ""
+            },
+            {
+              "column": "CreatedDate",
+              "fieldValue": "={{ $now.toFormat('dd-MM-yyyy') }}"
+            },
+            {
+              "column": "CreatedTime",
+              "fieldValue": "={{ $now.toFormat('hh:mm a') }}"
+            },
+            {
+              "column": "CreatedTimestampISO",
+              "fieldValue": "={{ $now.toISO() }}"
+            },
+            {
+              "column": "LastUpdated",
+              "fieldValue": "={{ $now.toFormat('dd-MM-yyyy hh:mm a') }}"
+            },
+            {
+              "column": "ClosedDate",
+              "fieldValue": ""
+            },
+            {
+              "column": "ResolutionNotes",
+              "fieldValue": ""
+            },
+            {
+              "column": "InternalRemarks",
+              "fieldValue": ""
+            },
+            {
+              "column": "Folder",
+              "fieldValue": "Processed/Open Tickets"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c32",
+      "name": "Excel - Create Ticket Row",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -4960,
+        2260
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "// \"Excel - Create Ticket Row\" (an Excel node) just wiped $json with its\n// own API response. \"Data Guard Validation\" always ran immediately\n// before it in this single path, so recover from there.\nconst preCreate = $('Data Guard Validation').item.json;\nreturn { json: { ...preCreate, outcome: \"created\", ticketId: preCreate.candidateTicketId } };\n"
+      },
+      "id": "c33",
+      "name": "Set Outcome - Created",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4740,
+        2260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nreturn { json: { ...item, outcome: \"invalid\" } };\n"
+      },
+      "id": "c34",
+      "name": "Set Outcome - Invalid",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4960,
+        2440
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "lookup",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "WorkflowLocks"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "WorkflowLocks"
+        },
+        "lookupColumn": "LockID",
+        "lookupValue": "MAIN",
+        "options": {
+          "returnAllMatches": false
+        }
+      },
+      "id": "c35",
+      "name": "Read Lock Status Again",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -4520,
+        2300
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reached after \"Read Lock Status Again\" (Excel lookup -- wiped $json).\n// Four different \"Set Outcome - *\" nodes could have led here; only one\n// of them actually ran this pass. Try each by name and take whichever\n// succeeds -- n8n throws a catchable error when referencing a node that\n// hasn't executed in the current run, which is exactly what we use here.\nfunction getOutcomeData() {\n  const candidates = [\n    \"Set Outcome - Created\",\n    \"Set Outcome - Duplicate\",\n    \"Set Outcome - Invalid\",\n    \"Set Outcome - ID Exhausted\"\n  ];\n  for (const name of candidates) {\n    try {\n      const result = $(name).item.json;\n      if (result) return result;\n    } catch (e) {\n      // this branch didn't fire this pass -- try the next candidate\n    }\n  }\n  // Should be unreachable; keeps the run alive instead of crashing.\n  return { ...$('Generate Lock Token').item.json, outcome: \"unknown\" };\n}\n\nconst recovered = getOutcomeData();\nconst lockCheckRow = $input.first().json;\nconst myToken = $('Generate Lock Token').item.json.lockToken;\nconst stillOwner = lockCheckRow.LockOwner === myToken;\n\nreturn { json: { ...recovered, stillOwner } };\n"
+      },
+      "id": "c36",
+      "name": "Confirm Ownership & Recover Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4300,
+        2300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c9",
+              "leftValue": "={{ $json.stillOwner }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c37",
+      "name": "IF - Still Owner?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -4080,
+        2300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "update",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "WorkflowLocks"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "WorkflowLocks"
+        },
+        "columnToMatchOn": "LockID",
+        "valueToMatchOn": "MAIN",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "LockStatus",
+              "fieldValue": "Unlocked"
+            },
+            {
+              "column": "LockOwner",
+              "fieldValue": ""
+            },
+            {
+              "column": "LockedAt",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c38",
+      "name": "Release Lock (Update)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -3860,
+        2220
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "append",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Timestamp",
+              "fieldValue": "={{ $now.toFormat('dd-MM-yyyy hh:mm a') }}"
+            },
+            {
+              "column": "MessageId",
+              "fieldValue": "={{ $json.messageId }}"
+            },
+            {
+              "column": "ConversationID",
+              "fieldValue": "={{ $json.conversationId }}"
+            },
+            {
+              "column": "SenderEmail",
+              "fieldValue": "={{ $json.senderEmail }}"
+            },
+            {
+              "column": "Subject",
+              "fieldValue": "={{ $json.subject }}"
+            },
+            {
+              "column": "Action",
+              "fieldValue": "LockAnomaly"
+            },
+            {
+              "column": "Reason",
+              "fieldValue": "Lock ownership had already changed hands before release -- likely our lock went stale mid-processing and was reclaimed. No action taken to avoid releasing someone else's lock."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c39",
+      "name": "Log Lock Anomaly (Audit)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -3860,
+        2400
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// \"Confirm Ownership & Recover Context\" already did the hard work and is\n// unambiguous by this point (exactly one instance, already executed).\n// This node exists purely so everything downstream (the Switch node's\n// rules, Reply/Move node expressions) can use plain {{$json.field}}\n// instead of every node needing its own recovery logic.\nconst recovered = $('Confirm Ownership & Recover Context').item.json;\nreturn { json: { ...recovered } };\n"
+      },
+      "id": "c40",
+      "name": "Prepare Routing Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3640,
+        2300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "created",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "created"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "duplicate_thread",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "duplicate"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "invalid",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "invalid"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "ticket_id_exhausted",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "exhausted"
+            }
+          ]
+        },
+        "fallbackOutput": "extra",
+        "options": {}
+      },
+      "id": "c41",
+      "name": "Route by Outcome",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -3420,
+        2300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nif (!item.messageId) {\n  throw new Error(\"Missing messageId -- cannot send acknowledgement reply.\");\n}\nreturn { json: { ...item } };\n"
+      },
+      "id": "c42",
+      "name": "Prepare Reply Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3200,
+        2060
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "replyAll",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "message": "=<div style=\"font-family: 'Segoe UI', Helvetica, Arial, sans-serif; background-color: #f4f6f9; padding: 20px; color: #333333;\">\n  <div style=\"max-width: 580px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);\">\n    <div style=\"background-color: #0056b3; padding: 20px 25px; color: #ffffff;\">\n      <h2 style=\"margin: 0; font-size: 20px; font-weight: 600;\">IT Support Request Received</h2>\n    </div>\n    <div style=\"padding: 25px;\">\n      <p style=\"font-size: 15px; line-height: 1.5; margin-top: 0;\">Dear <strong>{{ $json.senderName }}</strong>,</p>\n      <p style=\"font-size: 14px; color: #555555; line-height: 1.5;\">Thank you for reaching out. We have logged a new support ticket for your request.</p>\n      <div style=\"background-color: #f8fafc; border-left: 4px solid #0056b3; padding: 15px 20px; margin: 20px 0; border-radius: 0 6px 6px 0;\">\n        <table style=\"width: 100%; border-collapse: collapse; font-size: 14px;\">\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b; width: 130px;\"><strong>Ticket ID:</strong></td>\n            <td style=\"padding: 4px 0; font-weight: 700; color: #0056b3;\">{{ $json.ticketId }}</td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Subject:</strong></td>\n            <td style=\"padding: 4px 0; color: #1e293b;\">{{ $json.subject }}</td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Status:</strong></td>\n            <td style=\"padding: 4px 0;\"><span style=\"background-color: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;\">NEW</span></td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Priority:</strong></td>\n            <td style=\"padding: 4px 0; color: #1e293b;\">{{ $json.priority }}</td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Received:</strong></td>\n            <td style=\"padding: 4px 0; color: #1e293b;\">{{ $now.toFormat('dd-MM-yyyy hh:mm a') }}</td>\n          </tr>\n        </table>\n      </div>\n      <p style=\"font-size: 14px; color: #555555; line-height: 1.5;\">Our support team is reviewing your request and will follow up with you on this same email thread. Please reply here for any updates -- no need to send a new email.</p>\n      <hr style=\"border: none; border-top: 1px solid #e2e8f0; margin: 25px 0 15px 0;\" />\n      <p style=\"font-size: 13px; color: #64748b; margin: 0; line-height: 1.4;\">\n        Best regards,<br>\n        <strong style=\"color: #1e293b;\">Rushak Pachpande</strong><br>\n        NGI IT Support Team\n      </p>\n    </div>\n  </div>\n</div>",
+        "options": {}
+      },
+      "id": "c43",
+      "name": "Reply to Requester (ReplyAll HTML)",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        -2980,
+        2060
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "Processed/Open Tickets"
+        }
+      },
+      "id": "c44",
+      "name": "Move to Processed - Open Tickets (Created)",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        -2760,
+        2060
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "Processed/Open Tickets"
+        }
+      },
+      "id": "c45",
+      "name": "Move to Processed - Open Tickets (Duplicate)",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        -3200,
+        2220
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "append",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Timestamp",
+              "fieldValue": "={{ $now.toFormat('dd-MM-yyyy hh:mm a') }}"
+            },
+            {
+              "column": "MessageId",
+              "fieldValue": "={{ $json.messageId }}"
+            },
+            {
+              "column": "ConversationID",
+              "fieldValue": "={{ $json.conversationId }}"
+            },
+            {
+              "column": "SenderEmail",
+              "fieldValue": "={{ $json.senderEmail }}"
+            },
+            {
+              "column": "Subject",
+              "fieldValue": "={{ $json.subject }}"
+            },
+            {
+              "column": "Action",
+              "fieldValue": "Invalid"
+            },
+            {
+              "column": "Reason",
+              "fieldValue": "={{ $json.validationErrors }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c46",
+      "name": "Log Invalid Email (Audit)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -3200,
+        2380
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "NeedsReview"
+        }
+      },
+      "id": "c47",
+      "name": "Move to NeedsReview",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        -2980,
+        2380
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "append",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Timestamp",
+              "fieldValue": "={{ $now.toFormat('dd-MM-yyyy hh:mm a') }}"
+            },
+            {
+              "column": "MessageId",
+              "fieldValue": "={{ $json.messageId }}"
+            },
+            {
+              "column": "ConversationID",
+              "fieldValue": "={{ $json.conversationId }}"
+            },
+            {
+              "column": "SenderEmail",
+              "fieldValue": "={{ $json.senderEmail }}"
+            },
+            {
+              "column": "Subject",
+              "fieldValue": "={{ $json.subject }}"
+            },
+            {
+              "column": "Action",
+              "fieldValue": "Critical-IDExhausted"
+            },
+            {
+              "column": "Reason",
+              "fieldValue": "Could not find a unique 4-char ticket ID suffix after 10 attempts on the same day -- statistically almost impossible; investigate the Tickets table for corruption."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c48",
+      "name": "Log Critical - ID Exhausted (Audit)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -3200,
+        2540
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "NeedsManualCreation"
+        }
+      },
+      "id": "c49",
+      "name": "Move to NeedsManualCreation (ID Exhausted)",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        -2980,
+        2540
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "append",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SP6BFKEGCJAM2BD22TEHTPLGKW4K",
+          "mode": "list",
+          "cachedResultName": "IT_Support_Tickets"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "table": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "AuditLog"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Timestamp",
+              "fieldValue": "={{ $now.toFormat('dd-MM-yyyy hh:mm a') }}"
+            },
+            {
+              "column": "MessageId",
+              "fieldValue": "={{ $json.messageId }}"
+            },
+            {
+              "column": "ConversationID",
+              "fieldValue": "={{ $json.conversationId }}"
+            },
+            {
+              "column": "SenderEmail",
+              "fieldValue": "={{ $json.senderEmail }}"
+            },
+            {
+              "column": "Subject",
+              "fieldValue": "={{ $json.subject }}"
+            },
+            {
+              "column": "Action",
+              "fieldValue": "Critical-UnexpectedOutcome"
+            },
+            {
+              "column": "Reason",
+              "fieldValue": "Route by Outcome hit its fallback branch -- an outcome value was produced that doesn't match any known case. Investigate immediately."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c50",
+      "name": "Log Critical - Unexpected Outcome (Audit)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        -3200,
+        2700
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "NeedsManualCreation"
+        }
+      },
+      "id": "c51",
+      "name": "Move to NeedsManualCreation (Unexpected)",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        -2980,
+        2700
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "content": "## Core Processor\nCallable sub-workflow -- the single source of truth for turning one Graph 'message' object into a ticket (or a correctly-logged non-ticket outcome). Called by both Main (real-time) and Reconciliation (safety net). Never triggered directly.\n\nKey guarantee: the lock loop below makes it safe for many concurrent invocations of THIS workflow -- from either caller -- to run at the same instant without racing each other on the Excel table.",
+        "height": 220,
+        "width": 460
+      },
+      "id": "note1",
+      "name": "Sticky - Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -9800,
+        2140
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Lock loop (best-effort optimistic lock)\nExcel has no atomic compare-and-swap, so this is write-then-verify-ownership, not a true distributed lock. Residual race window: the brief gap between our WRITE landing and our READ-back returning, during which another execution's WRITE could interleave. In practice this window is small (a network round trip) and the ownership check catches it when it happens -- the loser just retries with backoff. For a mathematically airtight guarantee you'd want a real lock primitive (Redis/Postgres advisory lock) -- out of scope for an Outlook+Excel-only stack, noted here as the upgrade path if ticket volume ever grows enough to matter.",
+        "height": 260,
+        "width": 480
+      },
+      "id": "note2",
+      "name": "Sticky - Lock Caveat",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -8480,
+        1980
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Critical section kept short\nThe lock is held only for: dedupe lookups, ticket-ID uniqueness loop, and the Excel append. The email reply and folder move happen AFTER release. This matters -- holding a global lock during a slow network send would serialize every concurrent ticket behind the slowest email send, which is exactly what we don't want under 'multiple emails per second' load.",
+        "height": 200,
+        "width": 460
+      },
+      "id": "note3",
+      "name": "Sticky - Critical Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -6940,
+        1980
+      ]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract, Filter, Tag & Sanitize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract, Filter, Tag & Sanitize": {
+      "main": [
+        [
+          {
+            "node": "IF - Should Process This Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Should Process This Email?": {
+      "main": [
+        [
+          {
+            "node": "Generate Lock Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Dropped Email (Audit)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Dropped Email (Audit)": {
+      "main": [
+        [
+          {
+            "node": "Move Filtered Email to Filtered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Lock Token": {
+      "main": [
+        [
+          {
+            "node": "Read Lock Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Lock Status": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Lock": {
+      "main": [
+        [
+          {
+            "node": "IF - Lock Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Lock Available?": {
+      "main": [
+        [
+          {
+            "node": "Attempt Acquire Lock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attempt Acquire Lock": {
+      "main": [
+        [
+          {
+            "node": "Verify Lock Ownership",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Lock Ownership": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Ownership",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Ownership": {
+      "main": [
+        [
+          {
+            "node": "IF - Ownership Confirmed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Ownership Confirmed?": {
+      "main": [
+        [
+          {
+            "node": "Excel - Lookup by ConversationID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Retry": {
+      "main": [
+        [
+          {
+            "node": "IF - Exceeded Max Attempts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Exceeded Max Attempts?": {
+      "main": [
+        [
+          {
+            "node": "Log Lock Contention Failure (Audit)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait Before Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Lock Contention Failure (Audit)": {
+      "main": [
+        [
+          {
+            "node": "Move to NeedsManualCreation (Lock Timeout)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Before Retry": {
+      "main": [
+        [
+          {
+            "node": "Read Lock Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Lookup by ConversationID": {
+      "main": [
+        [
+          {
+            "node": "Excel - Lookup by InternetMessageId",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Lookup by InternetMessageId": {
+      "main": [
+        [
+          {
+            "node": "Check If Ticket Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Ticket Exists": {
+      "main": [
+        [
+          {
+            "node": "IF - Ticket Already Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Ticket Already Exists?": {
+      "main": [
+        [
+          {
+            "node": "Set Outcome - Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Candidate Ticket ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Outcome - Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Read Lock Status Again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Candidate Ticket ID": {
+      "main": [
+        [
+          {
+            "node": "Excel - Lookup TicketID Uniqueness",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Lookup TicketID Uniqueness": {
+      "main": [
+        [
+          {
+            "node": "Check Ticket ID Collision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Ticket ID Collision": {
+      "main": [
+        [
+          {
+            "node": "IF - Collision And Retry?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Collision And Retry?": {
+      "main": [
+        [
+          {
+            "node": "Generate Candidate Ticket ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF - ID Attempts Exhausted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - ID Attempts Exhausted?": {
+      "main": [
+        [
+          {
+            "node": "Set Outcome - ID Exhausted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Data Guard Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Outcome - ID Exhausted": {
+      "main": [
+        [
+          {
+            "node": "Read Lock Status Again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Guard Validation": {
+      "main": [
+        [
+          {
+            "node": "IF - Valid Ticket Data?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Valid Ticket Data?": {
+      "main": [
+        [
+          {
+            "node": "Excel - Create Ticket Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set Outcome - Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Create Ticket Row": {
+      "main": [
+        [
+          {
+            "node": "Set Outcome - Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Outcome - Created": {
+      "main": [
+        [
+          {
+            "node": "Read Lock Status Again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Outcome - Invalid": {
+      "main": [
+        [
+          {
+            "node": "Read Lock Status Again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Lock Status Again": {
+      "main": [
+        [
+          {
+            "node": "Confirm Ownership & Recover Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirm Ownership & Recover Context": {
+      "main": [
+        [
+          {
+            "node": "IF - Still Owner?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Still Owner?": {
+      "main": [
+        [
+          {
+            "node": "Release Lock (Update)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Lock Anomaly (Audit)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Lock (Update)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Routing Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Lock Anomaly (Audit)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Routing Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Routing Context": {
+      "main": [
+        [
+          {
+            "node": "Route by Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Outcome": {
+      "main": [
+        [
+          {
+            "node": "Prepare Reply Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Move to Processed - Open Tickets (Duplicate)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Invalid Email (Audit)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Critical - ID Exhausted (Audit)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Critical - Unexpected Outcome (Audit)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Reply Payload": {
+      "main": [
+        [
+          {
+            "node": "Reply to Requester (ReplyAll HTML)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply to Requester (ReplyAll HTML)": {
+      "main": [
+        [
+          {
+            "node": "Move to Processed - Open Tickets (Created)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Invalid Email (Audit)": {
+      "main": [
+        [
+          {
+            "node": "Move to NeedsReview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Critical - ID Exhausted (Audit)": {
+      "main": [
+        [
+          {
+            "node": "Move to NeedsManualCreation (ID Exhausted)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Critical - Unexpected Outcome (Audit)": {
+      "main": [
+        [
+          {
+            "node": "Move to NeedsManualCreation (Unexpected)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "it-ticketing-core-v4"
+  }
+}

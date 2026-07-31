@@ -1,0 +1,100 @@
+{
+  "name": "IT Ticketing - Main (Outlook Trigger)",
+  "nodes": [
+    {
+      "parameters": {
+        "event": "messageReceived",
+        "options": {}
+      },
+      "id": "m01",
+      "name": "Outlook Trigger - New Mail",
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1,
+      "position": [
+        -9800,
+        2000
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "IT Ticketing - Core Processor  <-- SELECT THIS AFTER IMPORTING & SAVING THE CORE PROCESSOR WORKFLOW"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "m02",
+      "name": "Execute Workflow - Core Processor",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -9580,
+        2000
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Main -- Outlook Trigger (real-time path)\nThis is intentionally the ONLY entry point n8n's docs consider a true event trigger for new mail -- no Schedule/Cron/Manual anywhere in this workflow, per the requirement.\n\nAll actual logic lives in the 'IT Ticketing - Core Processor' sub-workflow, called once per email. Concurrency safety is handled INSIDE Core Processor via its Excel-based lock -- so it doesn't matter whether Graph delivers 1 notification or 10 in the same second, or whether this node fires them one at a time or in parallel; correctness is guaranteed by the callee, not by this workflow.\n\n### Verify after import\nThe Outlook Trigger node's exact parameter schema (trigger event name, subscription options) has shifted across n8n versions more than most nodes. Open this node after import and confirm it's configured to fire on new mail arriving in the Inbox -- the value 'messageReceived' is my best-effort default, not a guarantee it matches your installed version's exact field name.\n\nAlso confirm 'Execute Workflow' is set to run ONCE PER INPUT ITEM (not once for the whole batch) -- this setting's exact label also varies by version.",
+        "height": 340,
+        "width": 480
+      },
+      "id": "m03",
+      "name": "Sticky - Read This First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -9800,
+        1620
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Operational prerequisite\nMicrosoft Graph webhook subscriptions require n8n to be reachable over HTTPS from the public internet (Graph calls back to your n8n instance). For self-hosted n8n this typically means a reverse proxy / tunnel with a valid TLS cert, not just localhost. If n8n can't be reached publicly, this trigger will silently never fire -- which is exactly the gap the Reconciliation workflow exists to catch.",
+        "height": 200,
+        "width": 460
+      },
+      "id": "m04",
+      "name": "Sticky - Webhook Reachability",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -9580,
+        1620
+      ]
+    }
+  ],
+  "connections": {
+    "Outlook Trigger - New Mail": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow - Core Processor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "it-ticketing-main-v4"
+  }
+}

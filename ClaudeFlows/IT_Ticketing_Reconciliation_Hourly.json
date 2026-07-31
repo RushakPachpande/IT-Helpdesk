@@ -1,0 +1,142 @@
+{
+  "name": "IT Ticketing - Reconciliation (Hourly Safety Net)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "r01",
+      "name": "Schedule Trigger - Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -9800,
+        2000
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "output": "raw",
+        "options": {}
+      },
+      "id": "r02",
+      "name": "Get Inbox Messages",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        -9580,
+        2000
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Safety-net filter: anything still sitting in the raw Inbox after a\n// grace period has EITHER been missed by the webhook trigger, or is\n// mid-processing by a very recent, still-in-flight Main execution.\n// The grace period exists purely to avoid racing the latter case --\n// Core Processor's own lock would keep us safe even without it, but\n// there's no reason to manufacture unnecessary lock contention.\nconst GRACE_MS = 10 * 60 * 1000; // 10 minutes\nconst now = Date.now();\n\nreturn $input.all().filter((inputItem) => {\n  const item = inputItem.json;\n  const raw = item.receivedDateTime || item.createdDateTime;\n  if (!raw) return false;\n  const t = new Date(raw).getTime();\n  if (isNaN(t)) return false;\n  return (now - t) > GRACE_MS;\n});\n"
+      },
+      "id": "r03",
+      "name": "Filter - Still Unprocessed & Old Enough",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9360,
+        2000
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "IT Ticketing - Core Processor  <-- SELECT THIS AFTER IMPORTING & SAVING THE CORE PROCESSOR WORKFLOW"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "r04",
+      "name": "Execute Workflow - Core Processor",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -9140,
+        2000
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Reconciliation -- hourly safety net\nDoes NOT drive normal ticket creation. Its only job: find mail still sitting in the raw Inbox more than 10 minutes after arrival (meaning the webhook either missed it, or something failed mid-processing) and feed it through the exact same Core Processor pipeline.\n\nNo separate overlap-lock is needed on THIS workflow -- Core Processor's own per-item lock already makes it safe for this to run concurrently with Main, or with itself if a previous hourly run somehow overruns. Worst case on overlap: the second call to Core Processor for the same email finds the ticket already created and safely no-ops into the 'duplicate_thread' branch.\n\n### Monitoring tip\nIf this workflow regularly finds mail older than ~1 hour still in Inbox, that's a signal the Outlook Trigger's webhook subscription may have silently stopped renewing -- worth investigating rather than just letting Reconciliation quietly cover for it indefinitely.",
+        "height": 300,
+        "width": 480
+      },
+      "id": "r05",
+      "name": "Sticky - Purpose",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -9800,
+        1660
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger - Hourly": {
+      "main": [
+        [
+          {
+            "node": "Get Inbox Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Inbox Messages": {
+      "main": [
+        [
+          {
+            "node": "Filter - Still Unprocessed & Old Enough",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter - Still Unprocessed & Old Enough": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow - Core Processor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "it-ticketing-reconciliation-v4"
+  }
+}
