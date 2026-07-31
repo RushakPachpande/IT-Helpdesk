@@ -1,0 +1,2134 @@
+{
+  "name": "IT Ticketing - Main",
+  "nodes": [
+    {
+      "parameters": {
+        "event": "messageReceived",
+        "options": {}
+      },
+      "id": "n01-trigger",
+      "name": "Outlook Trigger - New Mail",
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        400
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Extract, Filter & Prioritize — one Graph message → one item\n// ============================================================\nconst item = $input.first().json;\n\nconst SELF_SENDER_MATCHES = [\n  \"itsupport@nextgeninnov8.com\",\n  \"itsupport_nextgeninnov8_com\"\n];\n\nconst AUTO_REPLY_SUBJECT_PREFIXES = [\n  \"automatic reply:\",\n  \"auto:\",\n  \"out of office\",\n  \"undeliverable:\",\n  \"read:\",\n  \"delivery status notification\",\n  \"mail delivery failed\"\n];\n\nconst HIGH_PRIORITY_KEYWORDS = [\n  \"urgent\", \"asap\", \"critical\", \"down\", \"outage\", \"emergency\",\n  \"not working\", \"cannot work\", \"can't work\", \"blocked\",\n  \"security breach\", \"breach\", \"data loss\", \"production down\",\n  \"server down\", \"cannot access\", \"can't access\"\n];\n\nconst LOW_PRIORITY_KEYWORDS = [\n  \"whenever\", \"no rush\", \"minor\", \"question\", \"inquiry\",\n  \"when you get a chance\", \"low priority\", \"just curious\", \"fyi\"\n];\n\nfunction detectPriority(subject, body) {\n  const text = `${subject} ${body}`.toLowerCase();\n  if (HIGH_PRIORITY_KEYWORDS.some((k) => text.includes(k))) return \"High\";\n  if (LOW_PRIORITY_KEYWORDS.some((k) => text.includes(k))) return \"Low\";\n  return \"Medium\";\n}\n\nfunction isSelfSent(senderEmail) {\n  const lower = (senderEmail || \"\").toLowerCase();\n  return SELF_SENDER_MATCHES.some((s) => lower.includes(s.toLowerCase()));\n}\n\nfunction isAutoReply(subject) {\n  const lower = (subject || \"\").trim().toLowerCase();\n  return AUTO_REPLY_SUBJECT_PREFIXES.some((prefix) => lower.startsWith(prefix));\n}\n\nfunction extractAddress(obj) {\n  if (!obj) return \"\";\n  if (typeof obj === \"string\") return obj;\n  const ea = obj.emailAddress || obj;\n  if (typeof ea === \"string\") return ea;\n  return ea.address || ea.email || obj.address || \"\";\n}\n\nfunction extractName(obj, email) {\n  if (!obj) return \"\";\n  const ea = obj.emailAddress || obj;\n  let name = \"\";\n  if (typeof ea === \"object\") name = ea.name || obj.name || \"\";\n  if (!name || name.trim() === \"\" || name === email) {\n    if (email && email.includes(\"@\")) {\n      return email.split(\"@\")[0]\n        .replace(/[._-]/g, \" \")\n        .replace(/\\b\\w/g, (c) => c.toUpperCase());\n    }\n    return \"Valued User\";\n  }\n  return name;\n}\n\nconst fromObj = item.from || item.sender || {};\nconst senderEmail = extractAddress(fromObj);\nconst senderName = extractName(fromObj, senderEmail);\n\nlet shouldProcess = true;\nlet dropReason = \"\";\nif (isSelfSent(senderEmail)) {\n  shouldProcess = false;\n  dropReason = \"self_sent\";\n} else if (isAutoReply(item.subject)) {\n  shouldProcess = false;\n  dropReason = \"auto_reply\";\n}\n\nlet rawBody = item.bodyPreview || (item.body && item.body.content) || \"\";\nlet cleanedBody = String(rawBody)\n  .replace(/<style[^>]*>[\\s\\S]*?<\\/style>/gi, \"\")\n  .replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, \"\")\n  .replace(/<[^>]*>/g, \"\")\n  .replace(/\\r\\n/g, \"\\n\")\n  .replace(/\\r/g, \"\\n\")\n  .split(\"\\n\")\n  .map((line) => line.trim())\n  .filter((line) => line.length > 0)\n  .join(\"\\n\\n\");\nif (cleanedBody.length > 1500) cleanedBody = cleanedBody.substring(0, 1497) + \"...\";\n\nconst ccList = [];\nconst ccRaw = item.ccRecipients || item.cc || [];\nif (Array.isArray(ccRaw)) {\n  for (const r of ccRaw) {\n    const addr = extractAddress(r);\n    if (addr) ccList.push(addr);\n  }\n}\n\nconst conversationIndex =\n  item.conversationIndex ||\n  (item.internetMessageHeaders || [])\n    .find((h) => (h.name || \"\").toLowerCase() === \"thread-index\")?.value ||\n  \"\";\n\nconst priority = detectPriority(item.subject || \"\", cleanedBody);\n\nreturn [{\n  json: {\n    messageId: item.id || \"\",\n    conversationId: item.conversationId || \"\",\n    internetMessageId: item.internetMessageId || \"\",\n    conversationIndex,\n    subject: item.subject || \"(no subject)\",\n    senderName,\n    senderEmail,\n    ccEmails: ccList.join(\", \"),\n    bodyPreview: cleanedBody || \"(no content)\",\n    receivedDateTime: item.receivedDateTime || item.createdDateTime || \"\",\n    priority,\n    shouldProcess,\n    dropReason,\n    folderLabel: \"Open Tickets\"\n  }\n}];\n"
+      },
+      "id": "n02-extract",
+      "name": "Extract, Filter & Prioritize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-should-process",
+              "leftValue": "={{ $json.shouldProcess }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n03-if-process",
+      "name": "IF - Should Process?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "AQMkADg1YzU0ZDliLTUxNWItNDA0Yi1iMWMzLTFmN2YyZTIzNDZjYwAALgAAA8BXGtiWaUtMrakyzw4cBCcBACiz4DB5C1xLi-DdZ9AT76kAAAJhqgAAAA==",
+          "mode": "list",
+          "cachedResultName": "Processed",
+          "cachedResultUrl": "https://outlook.office365.com/mail/AQMkADg1YzU0ZDliLTUxNWItNDA0Yi1iMWMzLTFmN2YyZTIzNDZjYwAALgAAA8BXGtiWaUtMrakyzw4cBCcBACiz4DB5C1xLi%2FDdZ9AT76kAAAJhqgAAAA%3D%3D"
+        }
+      },
+      "id": "n04-move-dropped",
+      "name": "Move - Dropped to Processed",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        780,
+        640
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "lookup",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF",
+          "mode": "list",
+          "cachedResultName": "IT Support Tickets (n8n)",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0100-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "ITTickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1:AF4"
+        },
+        "lookupColumn": "Conversation ID",
+        "lookupValue": "={{ $json.conversationId }}",
+        "options": {
+          "returnAllMatches": true
+        }
+      },
+      "id": "n05-lookup-conv",
+      "name": "Excel - Lookup by ConversationID",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        780,
+        280
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const matchItem = $input.first();\n// Use .first() not .item — Excel lookup breaks pairedItem linking\nconst currentEmail = $('Extract, Filter & Prioritize').first().json;\nconst row = (matchItem && matchItem.json) ? matchItem.json : {};\n\nconst ticketId = row[\"Ticket ID\"] || row.TicketID || null;\nconst conversationId = row[\"Conversation ID\"] || row.ConversationID || null;\nconst ticketExists = Boolean(ticketId || conversationId);\nconst ackRaw = row[\"Ack Sent\"] || row.AckSent || \"\";\nconst ackSent = String(ackRaw).trim().toLowerCase() === \"yes\";\nconst processingStage = row[\"Processing Stage\"] || row.ProcessingStage || \"\";\n\nreturn [{\n  json: {\n    ...currentEmail,\n    ticketExists,\n    existingTicketId: ticketId,\n    existingAckSent: ackSent,\n    existingProcessingStage: processingStage,\n    existingSubject: row.Subject || row.subject || currentEmail.subject,\n    existingPriority: row.Priority || row.priority || currentEmail.priority,\n    existingRequesterName: row[\"Requester Name\"] || row.RequesterName || currentEmail.senderName,\n    existingCreatedDate: row[\"Created Date\"] || row.CreatedDate || \"\",\n    existingCreatedTime: row[\"Created Time\"] || row.CreatedTime || \"\"\n  }\n}];\n"
+      },
+      "id": "n06-check-exists",
+      "name": "Check If Ticket Exists",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-ticket-exists",
+              "leftValue": "={{ $json.ticketExists }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n07-if-exists",
+      "name": "IF - Ticket Already Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1300,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-ack-sent",
+              "leftValue": "={{ $json.existingAckSent }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n07b-if-ack",
+      "name": "IF - Ack Already Sent?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1560,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "AAMkADg1YzU0ZDliLTUxNWItNDA0Yi1iMWMzLTFmN2YyZTIzNDZjYwAuAAAAAADAVxrYlmlLTK2pMs8OHAQnAQAos_AweQtcS4vw3WfQE__pAAAFjntnAAA=",
+          "mode": "list",
+          "cachedResultName": "Processed/Open Tickets",
+          "cachedResultUrl": "https://outlook.office365.com/mail/AAMkADg1YzU0ZDliLTUxNWItNDA0Yi1iMWMzLTFmN2YyZTIzNDZjYwAuAAAAAADAVxrYlmlLTK2pMs8OHAQnAQAos_AweQtcS4vw3WfQE__pAAAFjntnAAA%3D"
+        }
+      },
+      "id": "n08-move-followup",
+      "name": "Move - Follow-up to Open Tickets",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        -40
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst messageId = String(item.messageId || \"\").trim();\nif (!messageId) {\n  throw new Error(\"Missing messageId for resume ack reply\");\n}\nconst ticketId = item.existingTicketId;\nif (!ticketId) {\n  throw new Error(\"Missing existingTicketId for resume ack\");\n}\n\nconst now = new Date();\nconst createdDate = item.existingCreatedDate || now.toLocaleDateString(\"en-GB\");\nconst createdTime = item.existingCreatedTime || now.toLocaleTimeString(\"en-US\", {\n  hour: \"2-digit\",\n  minute: \"2-digit\",\n  hour12: true,\n  timeZone: \"Asia/Kolkata\"\n});\n\nreturn [{\n  json: {\n    messageId,\n    conversationId: item.conversationId,\n    internetMessageId: item.internetMessageId,\n    ticketId,\n    senderName: item.existingRequesterName || item.senderName || \"Valued User\",\n    senderEmail: item.senderEmail || \"\",\n    ccEmails: item.ccEmails || \"\",\n    subject: item.existingSubject || item.subject || \"(no subject)\",\n    priority: item.existingPriority || item.priority || \"Medium\",\n    createdDate,\n    createdTime,\n    resumeAck: true\n  }\n}];\n"
+      },
+      "id": "n08a-prep-resume",
+      "name": "Prepare Resume Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "reply",
+        "replyToSenderOnly": false,
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "message": "=<div style=\"font-family: 'Segoe UI', Helvetica, Arial, sans-serif; background-color: #f4f6f9; padding: 20px; color: #333333;\">\n  <div style=\"max-width: 580px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);\">\n    <div style=\"background-color: #0056b3; padding: 20px 25px; color: #ffffff;\">\n      <h2 style=\"margin: 0; font-size: 20px; font-weight: 600;\">IT Support Request Received</h2>\n    </div>\n    <div style=\"padding: 25px;\">\n      <p style=\"font-size: 15px; line-height: 1.5; margin-top: 0;\">Dear <strong>{{ $json.senderName }}</strong>,</p>\n      <p style=\"font-size: 14px; color: #555555; line-height: 1.5;\">Thank you for reaching out. We have logged a new support ticket for your request.</p>\n      <div style=\"background-color: #f8fafc; border-left: 4px solid #0056b3; padding: 15px 20px; margin: 20px 0; border-radius: 0 6px 6px 0;\">\n        <table style=\"width: 100%; border-collapse: collapse; font-size: 14px;\">\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b; width: 110px;\"><strong>Ticket ID:</strong></td>\n            <td style=\"padding: 4px 0; font-weight: 700; color: #0056b3;\">{{ $json.ticketId }}</td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Subject:</strong></td>\n            <td style=\"padding: 4px 0; color: #1e293b;\">{{ $json.subject }}</td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Status:</strong></td>\n            <td style=\"padding: 4px 0;\"><span style=\"background-color: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;\">NEW</span></td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Priority:</strong></td>\n            <td style=\"padding: 4px 0; color: #1e293b;\">{{ $json.priority }}</td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Received:</strong></td>\n            <td style=\"padding: 4px 0; color: #1e293b;\">{{ $now.toFormat('dd-MM-yyyy hh:mm a') }}</td>\n          </tr>\n        </table>\n      </div>\n      <p style=\"font-size: 14px; color: #555555; line-height: 1.5;\">Our support team is reviewing your request and will follow up with you on this thread within 1 business day. Please reply on this email thread for any updates related to this ticket.</p>\n      <hr style=\"border: none; border-top: 1px solid #e2e8f0; margin: 25px 0 15px 0;\" />\n      <p style=\"font-size: 13px; color: #64748b; margin: 0; line-height: 1.4;\">\n        Best regards,<br>\n        <strong style=\"color: #1e293b;\">Rushak Pachpande</strong><br>\n        NGI IT Support Team\n      </p>\n    </div>\n  </div>\n</div>",
+        "options": {}
+      },
+      "id": "n08b-resume-reply",
+      "name": "Resume Reply to Requester",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        160
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "getRows",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF",
+          "mode": "list",
+          "cachedResultName": "IT Support Tickets (n8n)",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0100-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "ITTickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1:AF4"
+        },
+        "returnAll": true,
+        "rawData": false,
+        "filters": {}
+      },
+      "id": "n08c-get-rows",
+      "name": "Excel - Get Rows (Resume Ack)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        2340,
+        160
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Resolve Excel row for Ticket ID, then emit Graph range PATCH payloads.\n// Table getRows order matches table row index (0-based). Header is Excel row 1.\nconst ticketId = String($('Prepare Resume Reply').first().json.ticketId || \"\").trim();\nif (!ticketId) {\n  throw new Error(\"Missing ticketId for stage patch\");\n}\n\nconst workbookId = \"01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF\";\nconst rows = $input.all();\nlet tableIndex = -1;\nfor (let i = 0; i < rows.length; i++) {\n  const row = rows[i].json || {};\n  const id = row[\"Ticket ID\"] || row.TicketID || \"\";\n  if (String(id).trim() === ticketId) {\n    tableIndex = i;\n    break;\n  }\n}\nif (tableIndex < 0) {\n  throw new Error(`Ticket ID not found in ITTickets table: ${ticketId}`);\n}\n\nconst excelRow = tableIndex + 2; // row 1 = header\nconst lastUpdated = new Date().toLocaleString(\"en-GB\", { timeZone: \"Asia/Kolkata\" });\nconst base = `https://graph.microsoft.com/v1.0/me/drive/items/${workbookId}/workbook/worksheets('Tickets')`;\n\n  // Z=Processing Stage, AA=Ack Sent; S=Last Updated\n  return [{\n    json: {\n      ticketId,\n      excelRow,\n      patchA: {\n        graphUrl: `${base}/range(address='Z${excelRow}:AA${excelRow}')`,\n        patchBody: { values: [[\"Acked\", \"Yes\"]] }\n      },\n      patchB: {\n        graphUrl: `${base}/range(address='S${excelRow}')`,\n        patchBody: { values: [[lastUpdated]] }\n      }\n    }\n  }];\n"
+      },
+      "id": "n08c-resolve",
+      "name": "Resolve Ack Patch (Resume)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2500,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $json.patchA.graphUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftExcelOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.patchA.patchBody) }}",
+        "options": {}
+      },
+      "id": "n08c-http-a",
+      "name": "HTTP - Patch Ack Stage (Resume)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2660,
+        160
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Resolve Ack Patch (Resume)').first().json.patchB.graphUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftExcelOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Resolve Ack Patch (Resume)').first().json.patchB.patchBody) }}",
+        "options": {}
+      },
+      "id": "n08c-http-b",
+      "name": "HTTP - Patch Ack Timestamp (Resume)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2820,
+        160
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $('Prepare Resume Reply').first().json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "AAMkADg1YzU0ZDliLTUxNWItNDA0Yi1iMWMzLTFmN2YyZTIzNDZjYwAuAAAAAADAVxrYlmlLTK2pMs8OHAQnAQAos_AweQtcS4vw3WfQE__pAAAFjntnAAA=",
+          "mode": "list",
+          "cachedResultName": "Processed/Open Tickets",
+          "cachedResultUrl": "https://outlook.office365.com/mail/AAMkADg1YzU0ZDliLTUxNWItNDA0Yi1iMWMzLTFmN2YyZTIzNDZjYwAuAAAAAADAVxrYlmlLTK2pMs8OHAQnAQAos_AweQtcS4vw3WfQE__pAAAFjntnAAA%3D"
+        }
+      },
+      "id": "n08d-move-resume",
+      "name": "Move - Resume to Open Tickets",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        2980,
+        160
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "getRows",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF",
+          "mode": "list",
+          "cachedResultName": "IT Support Tickets (n8n)",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0100-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "ITTickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1:AF4"
+        },
+        "returnAll": true,
+        "rawData": false,
+        "filters": {}
+      },
+      "id": "n08e-get-rows",
+      "name": "Excel - Get Rows (Resume Complete)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        3140,
+        160
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Resolve Excel row for Ticket ID, then emit Graph range PATCH payloads.\n// Table getRows order matches table row index (0-based). Header is Excel row 1.\nconst ticketId = String($('Prepare Resume Reply').first().json.ticketId || \"\").trim();\nif (!ticketId) {\n  throw new Error(\"Missing ticketId for stage patch\");\n}\n\nconst workbookId = \"01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF\";\nconst rows = $input.all();\nlet tableIndex = -1;\nfor (let i = 0; i < rows.length; i++) {\n  const row = rows[i].json || {};\n  const id = row[\"Ticket ID\"] || row.TicketID || \"\";\n  if (String(id).trim() === ticketId) {\n    tableIndex = i;\n    break;\n  }\n}\nif (tableIndex < 0) {\n  throw new Error(`Ticket ID not found in ITTickets table: ${ticketId}`);\n}\n\nconst excelRow = tableIndex + 2; // row 1 = header\nconst lastUpdated = new Date().toLocaleString(\"en-GB\", { timeZone: \"Asia/Kolkata\" });\nconst base = `https://graph.microsoft.com/v1.0/me/drive/items/${workbookId}/workbook/worksheets('Tickets')`;\n\n  // R=Folder, S=Last Updated; Z=Processing Stage\n  return [{\n    json: {\n      ticketId,\n      excelRow,\n      patchA: {\n        graphUrl: `${base}/range(address='R${excelRow}:S${excelRow}')`,\n        patchBody: { values: [[\"Open Tickets\", lastUpdated]] }\n      },\n      patchB: {\n        graphUrl: `${base}/range(address='Z${excelRow}')`,\n        patchBody: { values: [[\"Complete\"]] }\n      }\n    }\n  }];\n"
+      },
+      "id": "n08e-resolve",
+      "name": "Resolve Complete Patch (Resume)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3300,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $json.patchA.graphUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftExcelOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.patchA.patchBody) }}",
+        "options": {}
+      },
+      "id": "n08e-http-a",
+      "name": "HTTP - Patch Complete Folder (Resume)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3460,
+        160
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Resolve Complete Patch (Resume)').first().json.patchB.graphUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftExcelOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Resolve Complete Patch (Resume)').first().json.patchB.patchBody) }}",
+        "options": {}
+      },
+      "id": "n08e-http-b",
+      "name": "HTTP - Patch Complete Stage (Resume)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3620,
+        160
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $input.first().json;\n// Prefer email payload carried on the item; on collision retry, payload is forwarded.\n// Never use .item here — pairedItem breaks after Excel / IF branches.\nconst base = prev.messageId\n  ? prev\n  : $('Extract, Filter & Prioritize').first().json;\n\nconst attempt = (prev.idAttempt || 0) + 1;\nconst MAX_ATTEMPTS = 5;\n\nconst now = new Date();\nconst dd = String(now.getDate()).padStart(2, \"0\");\nconst mm = String(now.getMonth() + 1).padStart(2, \"0\");\nconst yy = String(now.getFullYear()).slice(-2);\n\nconst charset = \"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\";\nlet suffix = \"\";\nfor (let i = 0; i < 4; i++) {\n  suffix += charset[Math.floor(Math.random() * charset.length)];\n}\n\nconst ticketId = `NGI-${dd}${mm}${yy}-${suffix}`;\n\nconst createdDate = `${dd}-${mm}-${now.getFullYear()}`;\nconst createdTime = now.toLocaleTimeString(\"en-US\", {\n  hour: \"2-digit\",\n  minute: \"2-digit\",\n  hour12: true,\n  timeZone: \"Asia/Kolkata\"\n});\nconst lastUpdated = now.toLocaleString(\"en-GB\", { timeZone: \"Asia/Kolkata\" });\n\nreturn [{\n  json: {\n    ...base,\n    ticketId,\n    candidateTicketId: ticketId,\n    idAttempt: attempt,\n    maxIdAttempts: MAX_ATTEMPTS,\n    createdDate,\n    createdTime,\n    lastUpdated\n  }\n}];\n"
+      },
+      "id": "n09-gen-id",
+      "name": "Generate Ticket ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "lookup",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF",
+          "mode": "list",
+          "cachedResultName": "IT Support Tickets (n8n)",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0100-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "ITTickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1:AF4"
+        },
+        "lookupColumn": "Ticket ID",
+        "lookupValue": "={{ $json.ticketId }}",
+        "options": {
+          "returnAllMatches": true
+        }
+      },
+      "id": "n10-lookup-tid",
+      "name": "Excel - Lookup TicketID",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        1820,
+        400
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const lookup = $input.first().json || {};\nconst candidate = $('Generate Ticket ID').first().json;\n\nconst collision = Boolean(\n  lookup[\"Ticket ID\"] || lookup.TicketID || lookup.ticketId\n);\n\nconst exhausted = collision && candidate.idAttempt >= candidate.maxIdAttempts;\n\nreturn [{\n  json: {\n    ...candidate,\n    idCollision: collision,\n    idExhausted: exhausted,\n    // When unique, proceed; when collision and not exhausted, retry generate\n    needsRetry: collision && !exhausted\n  }\n}];\n"
+      },
+      "id": "n11-check-collision",
+      "name": "Check Ticket ID Collision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-needs-retry",
+              "leftValue": "={{ $json.needsRetry }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n12-if-retry",
+      "name": "IF - ID Collision Retry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2340,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst errors = [];\n\nif (!item.ticketId) errors.push(\"Missing ticketId\");\nif (!item.senderEmail || !String(item.senderEmail).includes(\"@\")) errors.push(\"Invalid senderEmail\");\nif (!item.messageId) errors.push(\"Missing messageId\");\nif (!item.conversationId) errors.push(\"Missing conversationId\");\nif (!item.subject) errors.push(\"Missing subject\");\nif (item.idExhausted) errors.push(\"Ticket ID collision retries exhausted\");\n\nreturn [{\n  json: {\n    ...item,\n    isValid: errors.length === 0,\n    validationErrors: errors.join(\"; \")\n  }\n}];\n"
+      },
+      "id": "n13-guard",
+      "name": "Data Guard Validation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-valid",
+              "leftValue": "={{ $json.isValid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n14-if-valid",
+      "name": "IF - Valid Ticket Data?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2860,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst now = new Date();\nconst lastUpdated = now.toLocaleString(\"en-GB\", { timeZone: \"Asia/Kolkata\" });\nreturn [{\n  json: {\n    ...item,\n    lastUpdated,\n    status: \"Needs Review\",\n    processingStage: \"NeedsReview\",\n    ackSent: \"No\",\n    aiIssueSummary: item.validationErrors || \"Validation failed\",\n    aiPriority: item.priority || \"Medium\",\n    aiScope: item.senderEmail || \"\",\n    folderLabel: \"Open Tickets\",\n    internalRemarks: `Validation: ${item.validationErrors || \"unknown\"}`\n  }\n}];\n"
+      },
+      "id": "n15a-prep-invalid",
+      "name": "Prepare Invalid Ticket Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "append",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF",
+          "mode": "list",
+          "cachedResultName": "IT Support Tickets (n8n)",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0100-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "ITTickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1:AF4"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Ticket ID",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.ticketId }}"
+            },
+            {
+              "column": "Created Date",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.createdDate }}"
+            },
+            {
+              "column": "Created Time",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.createdTime }}"
+            },
+            {
+              "column": "Requester Name",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.senderName }}"
+            },
+            {
+              "column": "Requester Email",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.senderEmail }}"
+            },
+            {
+              "column": "CC Emails",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.ccEmails }}"
+            },
+            {
+              "column": "Subject",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.subject }}"
+            },
+            {
+              "column": "Email Body",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.bodyPreview }}"
+            },
+            {
+              "column": "Priority",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.priority }}"
+            },
+            {
+              "column": "Category",
+              "fieldValue": "Other"
+            },
+            {
+              "column": "Department",
+              "fieldValue": "Other"
+            },
+            {
+              "column": "Status",
+              "fieldValue": "Needs Review"
+            },
+            {
+              "column": "Assigned Engineer",
+              "fieldValue": "Unassigned"
+            },
+            {
+              "column": "Conversation ID",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.conversationId }}"
+            },
+            {
+              "column": "Internet Message ID",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.internetMessageId }}"
+            },
+            {
+              "column": "Conversation Index",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.conversationIndex }}"
+            },
+            {
+              "column": "Message Id",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.messageId }}"
+            },
+            {
+              "column": "Folder",
+              "fieldValue": "Open Tickets"
+            },
+            {
+              "column": "Last Updated",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.lastUpdated }}"
+            },
+            {
+              "column": "Closed Date",
+              "fieldValue": ""
+            },
+            {
+              "column": "Resolution Notes",
+              "fieldValue": ""
+            },
+            {
+              "column": "Internal Remarks",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.internalRemarks || '' }}"
+            },
+            {
+              "column": "Escalation Level",
+              "fieldValue": "L1"
+            },
+            {
+              "column": "Resolution",
+              "fieldValue": ""
+            },
+            {
+              "column": "Closure Reason",
+              "fieldValue": ""
+            },
+            {
+              "column": "Processing Stage",
+              "fieldValue": "NeedsReview"
+            },
+            {
+              "column": "Ack Sent",
+              "fieldValue": "No"
+            },
+            {
+              "column": "AI Issue Summary",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.aiIssueSummary || '' }}"
+            },
+            {
+              "column": "AI Priority",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.aiPriority || $('Prepare Invalid Ticket Row').first().json.priority || 'Medium' }}"
+            },
+            {
+              "column": "AI Scope",
+              "fieldValue": "={{ $('Prepare Invalid Ticket Row').first().json.aiScope || '' }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n15b-create-invalid",
+      "name": "Excel - Create Needs Review Row",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        3380,
+        760
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $('Prepare Invalid Ticket Row').first().json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "AAMkADg1YzU0ZDliLTUxNWItNDA0Yi1iMWMzLTFmN2YyZTIzNDZjYwAuAAAAAADAVxrYlmlLTK2pMs8OHAQnAQAos_AweQtcS4vw3WfQE__pAAAFjntnAAA=",
+          "mode": "list",
+          "cachedResultName": "Processed/Open Tickets",
+          "cachedResultUrl": "https://outlook.office365.com/mail/AAMkADg1YzU0ZDliLTUxNWItNDA0Yi1iMWMzLTFmN2YyZTIzNDZjYwAuAAAAAADAVxrYlmlLTK2pMs8OHAQnAQAos_AweQtcS4vw3WfQE__pAAAFjntnAAA%3D"
+        }
+      },
+      "id": "n15c-move-invalid",
+      "name": "Move - Invalid to Open Tickets",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        760
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an IT Support Assistant.\\n\\nAnalyze the following email subject and body.\\n\\nGenerate a concise summary (2–3 sentences) for an IT Engineer or IT Administrator.\\n\\nFocus only on the actual technical issue. Ignore greetings, signatures, and unnecessary details. Default the priority to Medium unless the email clearly indicates otherwise. Keep the output concise, factual, and easy to understand.\\n\\nEmail Content\\n\\nSubject:\\n{{ $json.subject }}\\n\\nBody:\\n{{ $json.bodyPreview }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "type": "SystemMessagePromptTemplate",
+              "message": "You are an IT Support Assistant. Return only the structured fields: issue, priority (Low|Medium|High|Critical), scope."
+            }
+          ]
+        }
+      },
+      "id": "n16-ai-chain",
+      "name": "AI - Summarize Email",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        3120,
+        400
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "model": "google/gemma-4-31b-it:free",
+        "options": {}
+      },
+      "id": "n16a-openrouter",
+      "name": "OpenRouter Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        3120,
+        620
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "wbYKVoXqxzzGp21N",
+          "name": "Rushak Personal OpenRouter Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n  \"issue\": \"Brief summary of the actual problem\",\n  \"priority\": \"Medium\",\n  \"scope\": \"Affected user, application, device, or system\"\n}"
+      },
+      "id": "n16b-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        3340,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge Structured Output Parser / LLM result with ticket payload.\n// continueOnFail on AI means we may only have the previous Data Guard item.\nconst guard = $('Data Guard Validation').first().json;\nconst aiItem = $input.first().json || {};\n\nfunction pick(...vals) {\n  for (const v of vals) {\n    if (v !== undefined && v !== null && String(v).trim() !== \"\") return String(v).trim();\n  }\n  return \"\";\n}\n\nconst body = String(guard.bodyPreview || \"\");\nconst defaultIssue = body.length > 220 ? body.substring(0, 217) + \"...\" : (body || guard.subject || \"No summary available\");\nconst defaultPriority = guard.priority || \"Medium\";\nconst defaultScope = guard.senderName\n  ? `${guard.senderName} <${guard.senderEmail || \"\"}>`\n  : (guard.senderEmail || \"Unknown\");\n\n// Structured parser may nest under output / json / top-level\nconst nested = aiItem.output || aiItem.json || aiItem;\nconst issue = pick(nested.issue, aiItem.issue, nested[\"AI Issue Summary\"]);\nconst aiPriority = pick(nested.priority, aiItem.priority, nested[\"AI Priority\"]);\nconst scope = pick(nested.scope, aiItem.scope, nested[\"AI Scope\"]);\n\nconst allowed = new Set([\"Low\", \"Medium\", \"High\", \"Critical\"]);\nconst normalizedPriority = allowed.has(aiPriority)\n  ? aiPriority\n  : (allowed.has(defaultPriority) ? defaultPriority : \"Medium\");\n\nreturn [{\n  json: {\n    ...guard,\n    aiIssueSummary: issue || defaultIssue,\n    aiPriority: normalizedPriority,\n    aiScope: scope || defaultScope,\n    aiUsedFallback: !(issue && scope)\n  }\n}];\n"
+      },
+      "id": "n16c-merge-ai",
+      "name": "Merge AI Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3380,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "append",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF",
+          "mode": "list",
+          "cachedResultName": "IT Support Tickets (n8n)",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0100-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "ITTickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1:AF4"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Ticket ID",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.ticketId }}"
+            },
+            {
+              "column": "Created Date",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.createdDate }}"
+            },
+            {
+              "column": "Created Time",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.createdTime }}"
+            },
+            {
+              "column": "Requester Name",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.senderName }}"
+            },
+            {
+              "column": "Requester Email",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.senderEmail }}"
+            },
+            {
+              "column": "CC Emails",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.ccEmails }}"
+            },
+            {
+              "column": "Subject",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.subject }}"
+            },
+            {
+              "column": "Email Body",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.bodyPreview }}"
+            },
+            {
+              "column": "Priority",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.priority }}"
+            },
+            {
+              "column": "Category",
+              "fieldValue": "Other"
+            },
+            {
+              "column": "Department",
+              "fieldValue": "Other"
+            },
+            {
+              "column": "Status",
+              "fieldValue": "New"
+            },
+            {
+              "column": "Assigned Engineer",
+              "fieldValue": "Unassigned"
+            },
+            {
+              "column": "Conversation ID",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.conversationId }}"
+            },
+            {
+              "column": "Internet Message ID",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.internetMessageId }}"
+            },
+            {
+              "column": "Conversation Index",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.conversationIndex }}"
+            },
+            {
+              "column": "Message Id",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.messageId }}"
+            },
+            {
+              "column": "Folder",
+              "fieldValue": "Open Tickets"
+            },
+            {
+              "column": "Last Updated",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.lastUpdated }}"
+            },
+            {
+              "column": "Closed Date",
+              "fieldValue": ""
+            },
+            {
+              "column": "Resolution Notes",
+              "fieldValue": ""
+            },
+            {
+              "column": "Internal Remarks",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.internalRemarks || '' }}"
+            },
+            {
+              "column": "Escalation Level",
+              "fieldValue": "L1"
+            },
+            {
+              "column": "Resolution",
+              "fieldValue": ""
+            },
+            {
+              "column": "Closure Reason",
+              "fieldValue": ""
+            },
+            {
+              "column": "Processing Stage",
+              "fieldValue": "Created"
+            },
+            {
+              "column": "Ack Sent",
+              "fieldValue": "No"
+            },
+            {
+              "column": "AI Issue Summary",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.aiIssueSummary || '' }}"
+            },
+            {
+              "column": "AI Priority",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.aiPriority || $('Merge AI Summary').first().json.priority || 'Medium' }}"
+            },
+            {
+              "column": "AI Scope",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.aiScope || '' }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n17-create",
+      "name": "Excel - Create Ticket Row",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        3640,
+        400
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "append",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF",
+          "mode": "list",
+          "cachedResultName": "IT Support Tickets (n8n)",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0500-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Audit Log",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Audit%20Log!A1"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF01000000}",
+          "mode": "list",
+          "cachedResultName": "AuditLog",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell='Audit%20Log'!A1:F2"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Timestamp",
+              "fieldValue": "={{ $now.toFormat('yyyy-MM-dd HH:mm:ss') }}"
+            },
+            {
+              "column": "Event",
+              "fieldValue": "ticket_created"
+            },
+            {
+              "column": "Ticket ID",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.ticketId }}"
+            },
+            {
+              "column": "Conversation ID",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.conversationId }}"
+            },
+            {
+              "column": "Message Id",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.messageId }}"
+            },
+            {
+              "column": "Detail",
+              "fieldValue": "={{ $('Merge AI Summary').first().json.subject }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n18-audit",
+      "name": "Excel - Audit Log Created",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        3900,
+        400
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "jsCode": "// After Excel append/update nodes, $json is often the Excel API response — not our ticket.\n// pairedItem is often undefined across Excel nodes, so NEVER use $('Node').item here.\nconst merge = $('Merge AI Summary').first().json;\n\nconst messageId = String(merge.messageId || \"\").trim();\nif (!messageId) {\n  throw new Error(`Missing valid Outlook messageId for reply. Received: ${JSON.stringify(merge.messageId)}`);\n}\n\nreturn [{\n  json: {\n    messageId,\n    conversationId: merge.conversationId,\n    internetMessageId: merge.internetMessageId,\n    ticketId: merge.ticketId,\n    senderName: merge.senderName || \"Valued User\",\n    senderEmail: merge.senderEmail || \"\",\n    ccEmails: merge.ccEmails || \"\",\n    subject: merge.subject || \"(no subject)\",\n    priority: merge.priority || \"Medium\",\n    createdDate: merge.createdDate,\n    createdTime: merge.createdTime\n  }\n}];\n"
+      },
+      "id": "n19-prep-reply",
+      "name": "Prepare Reply Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "reply",
+        "replyToSenderOnly": false,
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.messageId }}",
+          "mode": "id"
+        },
+        "message": "=<div style=\"font-family: 'Segoe UI', Helvetica, Arial, sans-serif; background-color: #f4f6f9; padding: 20px; color: #333333;\">\n  <div style=\"max-width: 580px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);\">\n    <div style=\"background-color: #0056b3; padding: 20px 25px; color: #ffffff;\">\n      <h2 style=\"margin: 0; font-size: 20px; font-weight: 600;\">IT Support Request Received</h2>\n    </div>\n    <div style=\"padding: 25px;\">\n      <p style=\"font-size: 15px; line-height: 1.5; margin-top: 0;\">Dear <strong>{{ $json.senderName }}</strong>,</p>\n      <p style=\"font-size: 14px; color: #555555; line-height: 1.5;\">Thank you for reaching out. We have logged a new support ticket for your request.</p>\n      <div style=\"background-color: #f8fafc; border-left: 4px solid #0056b3; padding: 15px 20px; margin: 20px 0; border-radius: 0 6px 6px 0;\">\n        <table style=\"width: 100%; border-collapse: collapse; font-size: 14px;\">\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b; width: 110px;\"><strong>Ticket ID:</strong></td>\n            <td style=\"padding: 4px 0; font-weight: 700; color: #0056b3;\">{{ $json.ticketId }}</td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Subject:</strong></td>\n            <td style=\"padding: 4px 0; color: #1e293b;\">{{ $json.subject }}</td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Status:</strong></td>\n            <td style=\"padding: 4px 0;\"><span style=\"background-color: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;\">NEW</span></td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Priority:</strong></td>\n            <td style=\"padding: 4px 0; color: #1e293b;\">{{ $json.priority }}</td>\n          </tr>\n          <tr>\n            <td style=\"padding: 4px 0; color: #64748b;\"><strong>Received:</strong></td>\n            <td style=\"padding: 4px 0; color: #1e293b;\">{{ $now.toFormat('dd-MM-yyyy hh:mm a') }}</td>\n          </tr>\n        </table>\n      </div>\n      <p style=\"font-size: 14px; color: #555555; line-height: 1.5;\">Our support team is reviewing your request and will follow up with you on this thread within 1 business day. Please reply on this email thread for any updates related to this ticket.</p>\n      <hr style=\"border: none; border-top: 1px solid #e2e8f0; margin: 25px 0 15px 0;\" />\n      <p style=\"font-size: 13px; color: #64748b; margin: 0; line-height: 1.4;\">\n        Best regards,<br>\n        <strong style=\"color: #1e293b;\">Rushak Pachpande</strong><br>\n        NGI IT Support Team\n      </p>\n    </div>\n  </div>\n</div>",
+        "options": {}
+      },
+      "id": "n20-reply",
+      "name": "Reply to Requester (HTML)",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        4420,
+        400
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "getRows",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF",
+          "mode": "list",
+          "cachedResultName": "IT Support Tickets (n8n)",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0100-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "ITTickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1:AF4"
+        },
+        "returnAll": true,
+        "rawData": false,
+        "filters": {}
+      },
+      "id": "n21-get-rows",
+      "name": "Excel - Get Rows (Ack)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        4680,
+        400
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Resolve Excel row for Ticket ID, then emit Graph range PATCH payloads.\n// Table getRows order matches table row index (0-based). Header is Excel row 1.\nconst ticketId = String($('Prepare Reply Payload').first().json.ticketId || \"\").trim();\nif (!ticketId) {\n  throw new Error(\"Missing ticketId for stage patch\");\n}\n\nconst workbookId = \"01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF\";\nconst rows = $input.all();\nlet tableIndex = -1;\nfor (let i = 0; i < rows.length; i++) {\n  const row = rows[i].json || {};\n  const id = row[\"Ticket ID\"] || row.TicketID || \"\";\n  if (String(id).trim() === ticketId) {\n    tableIndex = i;\n    break;\n  }\n}\nif (tableIndex < 0) {\n  throw new Error(`Ticket ID not found in ITTickets table: ${ticketId}`);\n}\n\nconst excelRow = tableIndex + 2; // row 1 = header\nconst lastUpdated = new Date().toLocaleString(\"en-GB\", { timeZone: \"Asia/Kolkata\" });\nconst base = `https://graph.microsoft.com/v1.0/me/drive/items/${workbookId}/workbook/worksheets('Tickets')`;\n\n  // Z=Processing Stage, AA=Ack Sent; S=Last Updated\n  return [{\n    json: {\n      ticketId,\n      excelRow,\n      patchA: {\n        graphUrl: `${base}/range(address='Z${excelRow}:AA${excelRow}')`,\n        patchBody: { values: [[\"Acked\", \"Yes\"]] }\n      },\n      patchB: {\n        graphUrl: `${base}/range(address='S${excelRow}')`,\n        patchBody: { values: [[lastUpdated]] }\n      }\n    }\n  }];\n"
+      },
+      "id": "n21-resolve",
+      "name": "Resolve Ack Patch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4840,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $json.patchA.graphUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftExcelOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.patchA.patchBody) }}",
+        "options": {}
+      },
+      "id": "n21-http-a",
+      "name": "HTTP - Patch Ack Stage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5000,
+        400
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Resolve Ack Patch').first().json.patchB.graphUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftExcelOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Resolve Ack Patch').first().json.patchB.patchBody) }}",
+        "options": {}
+      },
+      "id": "n21-http-b",
+      "name": "HTTP - Patch Ack Timestamp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5160,
+        400
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "move",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $('Prepare Reply Payload').first().json.messageId }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "AAMkADg1YzU0ZDliLTUxNWItNDA0Yi1iMWMzLTFmN2YyZTIzNDZjYwAuAAAAAADAVxrYlmlLTK2pMs8OHAQnAQAos_AweQtcS4vw3WfQE__pAAAFjntnAAA=",
+          "mode": "list",
+          "cachedResultName": "Processed/Open Tickets",
+          "cachedResultUrl": "https://outlook.office365.com/mail/AAMkADg1YzU0ZDliLTUxNWItNDA0Yi1iMWMzLTFmN2YyZTIzNDZjYwAuAAAAAADAVxrYlmlLTK2pMs8OHAQnAQAos_AweQtcS4vw3WfQE__pAAAFjntnAAA%3D"
+        }
+      },
+      "id": "n22-move-success",
+      "name": "Move - Success to Open Tickets",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        5320,
+        400
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "getRows",
+        "workbook": {
+          "__rl": true,
+          "value": "01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF",
+          "mode": "list",
+          "cachedResultName": "IT Support Tickets (n8n)",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0100-000000000000}",
+          "mode": "list",
+          "cachedResultName": "Tickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1"
+        },
+        "table": {
+          "__rl": true,
+          "value": "{00000000-000C-0000-FFFF-FFFF00000000}",
+          "mode": "list",
+          "cachedResultName": "ITTickets",
+          "cachedResultUrl": "https://asmeduorg-my.sharepoint.com/personal/itsupport_nextgeninnov8_com/_layouts/15/Doc.aspx?sourcedoc=%7B6F17683D-9C31-47DD-8E26-3BE16790B245%7D&file=IT%20Support%20Tickets%20(n8n).xlsx&action=default&mobileredirect=true&DefaultItemOpen=1&activeCell=Tickets!A1:AF4"
+        },
+        "returnAll": true,
+        "rawData": false,
+        "filters": {}
+      },
+      "id": "n23-get-rows",
+      "name": "Excel - Get Rows (Complete)",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        5480,
+        400
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Resolve Excel row for Ticket ID, then emit Graph range PATCH payloads.\n// Table getRows order matches table row index (0-based). Header is Excel row 1.\nconst ticketId = String($('Prepare Reply Payload').first().json.ticketId || \"\").trim();\nif (!ticketId) {\n  throw new Error(\"Missing ticketId for stage patch\");\n}\n\nconst workbookId = \"01RDI7SPZ5NALW6MM43VDY4JR34FTZBMSF\";\nconst rows = $input.all();\nlet tableIndex = -1;\nfor (let i = 0; i < rows.length; i++) {\n  const row = rows[i].json || {};\n  const id = row[\"Ticket ID\"] || row.TicketID || \"\";\n  if (String(id).trim() === ticketId) {\n    tableIndex = i;\n    break;\n  }\n}\nif (tableIndex < 0) {\n  throw new Error(`Ticket ID not found in ITTickets table: ${ticketId}`);\n}\n\nconst excelRow = tableIndex + 2; // row 1 = header\nconst lastUpdated = new Date().toLocaleString(\"en-GB\", { timeZone: \"Asia/Kolkata\" });\nconst base = `https://graph.microsoft.com/v1.0/me/drive/items/${workbookId}/workbook/worksheets('Tickets')`;\n\n  // R=Folder, S=Last Updated; Z=Processing Stage\n  return [{\n    json: {\n      ticketId,\n      excelRow,\n      patchA: {\n        graphUrl: `${base}/range(address='R${excelRow}:S${excelRow}')`,\n        patchBody: { values: [[\"Open Tickets\", lastUpdated]] }\n      },\n      patchB: {\n        graphUrl: `${base}/range(address='Z${excelRow}')`,\n        patchBody: { values: [[\"Complete\"]] }\n      }\n    }\n  }];\n"
+      },
+      "id": "n23-resolve",
+      "name": "Resolve Complete Patch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5640,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $json.patchA.graphUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftExcelOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.patchA.patchBody) }}",
+        "options": {}
+      },
+      "id": "n23-http-a",
+      "name": "HTTP - Patch Complete Folder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5800,
+        400
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Resolve Complete Patch').first().json.patchB.graphUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftExcelOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Resolve Complete Patch').first().json.patchB.patchBody) }}",
+        "options": {}
+      },
+      "id": "n23-http-b",
+      "name": "HTTP - Patch Complete Stage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5960,
+        400
+      ],
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "Sywc766oDseuUQUg",
+          "name": "IT Support NGI Microsoft Excel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "content": "## Setup before activating\n1. Import & activate **IT Ticketing - Error Notifier** first.\n2. Create Outlook folders (mailbox root): **Inbox**, **Open Tickets**, **Processed**.\n3. Open every **Move** node and reselect the correct folder (folder IDs are tenant-specific).\n4. Upload `IT Support Tickets.xlsx` (v2.0) to OneDrive/SharePoint; open every **Excel** node and reselect workbook + Tickets/ITTickets + Audit Log/AuditLog.\n5. Add **OpenRouter** (or swap to Groq) credential on **OpenRouter Chat Model**.\n6. Workflow Settings → **Error Workflow** → Error Notifier.\n7. Workflow Settings → **Concurrency** → `1` (no Excel lock sheet).\n8. Confirm Outlook Trigger watches Inbox.\n9. Update self-send filter email in Extract node if mailbox differs.",
+        "height": 380,
+        "width": 440
+      },
+      "id": "n24-note-setup",
+      "name": "Sticky Note - Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Debug map (left → right)\n1. Trigger → one email per execution\n2. Extract → shouldProcess / priority / CCs\n3. Drop → Processed (self/OOO)\n4. Lookup ConversationID\n   • exists + Ack=Yes → move Open Tickets\n   • exists + Ack≠Yes → resume reply → update → move\n5. New: Generate ID → uniqueness ≤5 → Data Guard\n6. Invalid → Needs Review row → Open Tickets\n7. Valid → AI summarize → Excel create (Ack=No) → Audit\n   → Reply → Graph PATCH Ack → move → Graph PATCH Complete\n\nExcel Table has no update op (n8n docs). Stage flags use getRows + HTTP PATCH Graph range. Concurrency=1. See WORKFLOW_GUIDE.md.",
+        "height": 380,
+        "width": 420
+      },
+      "id": "n25-note-debug",
+      "name": "Sticky Note - Debug Map",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        460,
+        20
+      ]
+    }
+  ],
+  "connections": {
+    "Outlook Trigger - New Mail": {
+      "main": [
+        [
+          {
+            "node": "Extract, Filter & Prioritize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract, Filter & Prioritize": {
+      "main": [
+        [
+          {
+            "node": "IF - Should Process?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Should Process?": {
+      "main": [
+        [
+          {
+            "node": "Excel - Lookup by ConversationID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Move - Dropped to Processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Lookup by ConversationID": {
+      "main": [
+        [
+          {
+            "node": "Check If Ticket Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Ticket Exists": {
+      "main": [
+        [
+          {
+            "node": "IF - Ticket Already Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Ticket Already Exists?": {
+      "main": [
+        [
+          {
+            "node": "IF - Ack Already Sent?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Ticket ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Ack Already Sent?": {
+      "main": [
+        [
+          {
+            "node": "Move - Follow-up to Open Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Resume Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Resume Reply": {
+      "main": [
+        [
+          {
+            "node": "Resume Reply to Requester",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resume Reply to Requester": {
+      "main": [
+        [
+          {
+            "node": "Excel - Get Rows (Resume Ack)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Get Rows (Resume Ack)": {
+      "main": [
+        [
+          {
+            "node": "Resolve Ack Patch (Resume)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Ack Patch (Resume)": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Patch Ack Stage (Resume)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Patch Ack Stage (Resume)": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Patch Ack Timestamp (Resume)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Patch Ack Timestamp (Resume)": {
+      "main": [
+        [
+          {
+            "node": "Move - Resume to Open Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move - Resume to Open Tickets": {
+      "main": [
+        [
+          {
+            "node": "Excel - Get Rows (Resume Complete)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Get Rows (Resume Complete)": {
+      "main": [
+        [
+          {
+            "node": "Resolve Complete Patch (Resume)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Complete Patch (Resume)": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Patch Complete Folder (Resume)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Patch Complete Folder (Resume)": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Patch Complete Stage (Resume)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Ticket ID": {
+      "main": [
+        [
+          {
+            "node": "Excel - Lookup TicketID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Lookup TicketID": {
+      "main": [
+        [
+          {
+            "node": "Check Ticket ID Collision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Ticket ID Collision": {
+      "main": [
+        [
+          {
+            "node": "IF - ID Collision Retry?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - ID Collision Retry?": {
+      "main": [
+        [
+          {
+            "node": "Generate Ticket ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Data Guard Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Guard Validation": {
+      "main": [
+        [
+          {
+            "node": "IF - Valid Ticket Data?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Valid Ticket Data?": {
+      "main": [
+        [
+          {
+            "node": "AI - Summarize Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Invalid Ticket Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Invalid Ticket Row": {
+      "main": [
+        [
+          {
+            "node": "Excel - Create Needs Review Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Create Needs Review Row": {
+      "main": [
+        [
+          {
+            "node": "Move - Invalid to Open Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI - Summarize Email": {
+      "main": [
+        [
+          {
+            "node": "Merge AI Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI - Summarize Email",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI - Summarize Email",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge AI Summary": {
+      "main": [
+        [
+          {
+            "node": "Excel - Create Ticket Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Create Ticket Row": {
+      "main": [
+        [
+          {
+            "node": "Excel - Audit Log Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Audit Log Created": {
+      "main": [
+        [
+          {
+            "node": "Prepare Reply Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Reply Payload": {
+      "main": [
+        [
+          {
+            "node": "Reply to Requester (HTML)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply to Requester (HTML)": {
+      "main": [
+        [
+          {
+            "node": "Excel - Get Rows (Ack)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Get Rows (Ack)": {
+      "main": [
+        [
+          {
+            "node": "Resolve Ack Patch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Ack Patch": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Patch Ack Stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Patch Ack Stage": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Patch Ack Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Patch Ack Timestamp": {
+      "main": [
+        [
+          {
+            "node": "Move - Success to Open Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move - Success to Open Tickets": {
+      "main": [
+        [
+          {
+            "node": "Excel - Get Rows (Complete)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Excel - Get Rows (Complete)": {
+      "main": [
+        [
+          {
+            "node": "Resolve Complete Patch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Complete Patch": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Patch Complete Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Patch Complete Folder": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Patch Complete Stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "65c4893a8d6a906fe9875d6d7f590a98920cafbf5e577782bc3e9c22366ebd22"
+  }
+}

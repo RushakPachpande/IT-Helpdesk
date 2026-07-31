@@ -76,6 +76,11 @@ TICKET_COLUMNS = [
     "Escalation Level",
     "Resolution",
     "Closure Reason",
+    "Processing Stage",
+    "Ack Sent",
+    "AI Issue Summary",
+    "AI Priority",
+    "AI Scope",
     "Ticket Age Days",
     "SLA Remaining Hours",
 ]
@@ -89,8 +94,23 @@ AUDIT_COLUMNS = [
     "Detail",
 ]
 
-STATUSES = ["New", "Open", "In Progress", "Pending", "Closed"]
+STATUSES = ["New", "Open", "In Progress", "Pending", "Needs Review", "Closed"]
 PRIORITIES = ["High", "Medium", "Low"]
+AI_PRIORITIES = ["Critical", "High", "Medium", "Low"]
+PROCESSING_STAGES = ["Created", "Acked", "Complete", "NeedsReview"]
+ACK_SENT_VALUES = ["Yes", "No"]
+
+
+def col_index(name: str) -> int:
+    """1-based column index for a Tickets header."""
+    try:
+        return TICKET_COLUMNS.index(name) + 1
+    except ValueError as exc:
+        raise KeyError(f"Unknown ticket column: {name}") from exc
+
+
+def col_letter(name: str) -> str:
+    return get_column_letter(col_index(name))
 CATEGORIES = [
     "Hardware",
     "Software",
@@ -188,7 +208,7 @@ def build_configuration(wb: Workbook) -> None:
         ("SLA Low Hours", 72),
         ("Ack Expected Response Text", "Our support team will follow up on this thread within 1 business day."),
         ("Timezone", "Asia/Kolkata"),
-        ("Workbook Version", "1.0"),
+        ("Workbook Version", "2.0"),
         ("Generated At", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
     ]
 
@@ -213,7 +233,9 @@ def build_configuration(wb: Workbook) -> None:
         "Upload this workbook to OneDrive/SharePoint under the IT Support account. "
         "In n8n Excel nodes, reselect this workbook and the ITTickets / AuditLog tables after upload "
         "(workbook and table IDs are tenant-specific). "
-        "CreatedDate / ClosedDate are real Excel dates (display dd-mm-yyyy)."
+        "CreatedDate / ClosedDate are real Excel dates (display dd-mm-yyyy). "
+        "Processing Stage / Ack Sent enable fault-tolerant resume; AI columns hold LLM summaries. "
+        "Outlook folders: Inbox, Open Tickets, Processed."
     )
     ws.merge_cells("A17:B19")
     ws["A17"].alignment = Alignment(wrap_text=True, vertical="top")
@@ -278,6 +300,15 @@ def build_users(wb: Workbook) -> None:
     ws["K1"] = "ClosureReasonList"
     for i, c in enumerate(CLOSURE_REASONS, start=2):
         ws.cell(row=i, column=11, value=c)
+    ws["L1"] = "ProcessingStageList"
+    for i, s in enumerate(PROCESSING_STAGES, start=2):
+        ws.cell(row=i, column=12, value=s)
+    ws["M1"] = "AckSentList"
+    for i, a in enumerate(ACK_SENT_VALUES, start=2):
+        ws.cell(row=i, column=13, value=a)
+    ws["N1"] = "AIPriorityList"
+    for i, p in enumerate(AI_PRIORITIES, start=2):
+        ws.cell(row=i, column=14, value=p)
 
     wb.defined_names.add(DefinedName(name="List_Status", attr_text=f"'Users'!$F$2:$F${1 + len(STATUSES)}"))
     wb.defined_names.add(DefinedName(name="List_Priority", attr_text=f"'Users'!$G$2:$G${1 + len(PRIORITIES)}"))
@@ -289,6 +320,15 @@ def build_users(wb: Workbook) -> None:
     wb.defined_names.add(
         DefinedName(name="List_ClosureReason", attr_text=f"'Users'!$K$2:$K${1 + len(CLOSURE_REASONS)}")
     )
+    wb.defined_names.add(
+        DefinedName(name="List_ProcessingStage", attr_text=f"'Users'!$L$2:$L${1 + len(PROCESSING_STAGES)}")
+    )
+    wb.defined_names.add(
+        DefinedName(name="List_AckSent", attr_text=f"'Users'!$M$2:$M${1 + len(ACK_SENT_VALUES)}")
+    )
+    wb.defined_names.add(
+        DefinedName(name="List_AIPriority", attr_text=f"'Users'!$N$2:$N${1 + len(AI_PRIORITIES)}")
+    )
 
     autosize(ws)
 
@@ -298,9 +338,12 @@ def sample_tickets() -> list[list]:
 
     CreatedDate / ClosedDate are real date objects (not text) so age/SLA formulas
     never depend on locale-sensitive DATEVALUE().
+    Formula columns (Ticket Age Days, SLA Remaining Hours) are filled later.
     """
     now = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    return [
+    # Row values exclude the two trailing formula columns.
+    data_cols = len(TICKET_COLUMNS) - 2
+    rows = [
         [
             "NGI-310726-A7K9",
             now - timedelta(days=2),
@@ -319,7 +362,7 @@ def sample_tickets() -> list[list]:
             "<msg-sample-001@mail.outlook.com>",
             "",
             "AAMkAGSampleMsg001",
-            "Processed/Open Tickets",
+            "Open Tickets",
             now - timedelta(days=1),
             None,  # ClosedDate
             "",
@@ -327,8 +370,11 @@ def sample_tickets() -> list[list]:
             "L1",
             "",
             "",
-            None,  # TicketAgeDays formula
-            None,  # SLARemainingHours formula
+            "Complete",
+            "Yes",
+            "VPN connection fails with error 809 after a Windows update.",
+            "High",
+            "VPN client / Engineering user Priya Sharma",
         ],
         [
             "NGI-300726-4PXM",
@@ -348,7 +394,7 @@ def sample_tickets() -> list[list]:
             "<msg-sample-002@mail.outlook.com>",
             "",
             "AAMkAGSampleMsg002",
-            "Processed/Open Tickets",
+            "Open Tickets",
             now,
             None,
             "",
@@ -356,8 +402,11 @@ def sample_tickets() -> list[list]:
             "L1",
             "",
             "",
-            None,
-            None,
+            "Complete",
+            "Yes",
+            "Outlook search returns no results for recent mail.",
+            "Medium",
+            "Outlook / Sales user Amit Patel",
         ],
         [
             "NGI-280726-X2Q8",
@@ -377,7 +426,7 @@ def sample_tickets() -> list[list]:
             "<msg-sample-003@mail.outlook.com>",
             "",
             "AAMkAGSampleMsg003",
-            "Processed/Closed",
+            "Processed",
             now - timedelta(days=1),
             now - timedelta(days=1),
             "Laptop imaged and delivered",
@@ -385,26 +434,40 @@ def sample_tickets() -> list[list]:
             "L1",
             "Resolved - Onsite",
             "Completed",
-            None,
-            None,
+            "Complete",
+            "Yes",
+            "Request for Windows 11 laptop setup for a new joiner.",
+            "Low",
+            "Laptop / HR new joiner",
         ],
     ]
+    for row in rows:
+        if len(row) != data_cols:
+            raise ValueError(f"Sample row length {len(row)} != {data_cols} data columns")
+    return rows
 
 
 def _ticket_age_formula(row: int) -> str:
-    # B=CreatedDate, L=Status, T=ClosedDate — real dates, no DATEVALUE
+    created = col_letter("Created Date")
+    status = col_letter("Status")
+    closed = col_letter("Closed Date")
+    ticket_id = col_letter("Ticket ID")
     return (
-        f'=IF(A{row}="","",'
-        f'IF(L{row}="Closed",IF(T{row}="",0,MAX(0,T{row}-B{row})),'
-        f'MAX(0,TODAY()-B{row})))'
+        f'=IF({ticket_id}{row}="","",'
+        f'IF({status}{row}="Closed",IF({closed}{row}="",0,MAX(0,{closed}{row}-{created}{row})),'
+        f'MAX(0,TODAY()-{created}{row})))'
     )
 
 
 def _ticket_sla_formula(row: int) -> str:
-    # Uses workbook names SLA_High / SLA_Medium / SLA_Low
+    ticket_id = col_letter("Ticket ID")
+    status = col_letter("Status")
+    priority = col_letter("Priority")
+    age = col_letter("Ticket Age Days")
     return (
-        f'=IF(OR(A{row}="",L{row}="Closed"),"",'
-        f'IF(I{row}="High",SLA_High,IF(I{row}="Low",SLA_Low,SLA_Medium))-Z{row}*24)'
+        f'=IF(OR({ticket_id}{row}="",{status}{row}="Closed"),"",'
+        f'IF({priority}{row}="High",SLA_High,IF({priority}{row}="Low",SLA_Low,SLA_Medium))'
+        f'-{age}{row}*24)'
     )
 
 
@@ -417,21 +480,34 @@ def build_tickets(wb: Workbook) -> None:
     ws.freeze_panes = "A2"
     # Do NOT set ws.auto_filter when using an Excel Table — dual filters corrupt refs in Excel.
 
+    age_col = col_index("Ticket Age Days")
+    sla_col = col_index("SLA Remaining Hours")
+    created_col = col_index("Created Date")
+    last_upd_col = col_index("Last Updated")
+    closed_col = col_index("Closed Date")
+    wrap_cols = {
+        col_index("Subject"),
+        col_index("Email Body"),
+        col_index("Resolution Notes"),
+        col_index("Internal Remarks"),
+        col_index("AI Issue Summary"),
+        col_index("AI Scope"),
+    }
+
     samples = sample_tickets()
     for r_idx, row in enumerate(samples, start=2):
         for c_idx, val in enumerate(row, start=1):
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
             cell.border = THIN
-            cell.alignment = Alignment(vertical="center", wrap_text=c_idx in (7, 8, 21, 22))
-            # Date columns: CreatedDate(B), LastUpdated(S), ClosedDate(T)
-            if c_idx in (2, 19, 20) and isinstance(val, datetime):
+            cell.alignment = Alignment(vertical="center", wrap_text=c_idx in wrap_cols)
+            if c_idx in (created_col, last_upd_col, closed_col) and isinstance(val, datetime):
                 cell.number_format = "dd-mm-yyyy"
 
-        age_cell = ws.cell(row=r_idx, column=26, value=_ticket_age_formula(r_idx))
+        age_cell = ws.cell(row=r_idx, column=age_col, value=_ticket_age_formula(r_idx))
         age_cell.border = THIN
         age_cell.number_format = "0"
 
-        sla_cell = ws.cell(row=r_idx, column=27, value=_ticket_sla_formula(r_idx))
+        sla_cell = ws.cell(row=r_idx, column=sla_col, value=_ticket_sla_formula(r_idx))
         sla_cell.border = THIN
         sla_cell.number_format = "0.0"
 
@@ -448,60 +524,55 @@ def build_tickets(wb: Workbook) -> None:
     )
     ws.add_table(table)
 
-    # Dropdowns (column letters based on TICKET_COLUMNS order)
-    # I=Priority, J=Category, K=Department, L=Status, M=AssignedEngineer,
-    # W=EscalationLevel, X=Resolution, Y=ClosureReason
-    add_list_validation(ws, "I", "=List_Priority")
-    add_list_validation(ws, "J", "=List_Categories")
-    add_list_validation(ws, "K", "=List_Department")
-    add_list_validation(ws, "L", "=List_Status")
-    add_list_validation(ws, "M", "=List_Engineers")
-    add_list_validation(ws, "W", "=List_Escalation")
-    add_list_validation(ws, "X", "=List_Resolution")
-    add_list_validation(ws, "Y", "=List_ClosureReason")
+    add_list_validation(ws, col_letter("Priority"), "=List_Priority")
+    add_list_validation(ws, col_letter("Category"), "=List_Categories")
+    add_list_validation(ws, col_letter("Department"), "=List_Department")
+    add_list_validation(ws, col_letter("Status"), "=List_Status")
+    add_list_validation(ws, col_letter("Assigned Engineer"), "=List_Engineers")
+    add_list_validation(ws, col_letter("Escalation Level"), "=List_Escalation")
+    add_list_validation(ws, col_letter("Resolution"), "=List_Resolution")
+    add_list_validation(ws, col_letter("Closure Reason"), "=List_ClosureReason")
+    add_list_validation(ws, col_letter("Processing Stage"), "=List_ProcessingStage")
+    add_list_validation(ws, col_letter("Ack Sent"), "=List_AckSent")
+    add_list_validation(ws, col_letter("AI Priority"), "=List_AIPriority")
 
-    # Conditional formatting on Status column L
+    status_letter = col_letter("Status")
+    priority_letter = col_letter("Priority")
+    engineer_letter = col_letter("Assigned Engineer")
+    sla_letter = col_letter("SLA Remaining Hours")
+
+    for status, fill in (
+        ("Open", FILL_OPEN),
+        ("New", FILL_OPEN),
+        ("Needs Review", FILL_MISSING),
+        ("In Progress", FILL_IN_PROGRESS),
+        ("Pending", FILL_PENDING),
+        ("Closed", FILL_CLOSED),
+    ):
+        ws.conditional_formatting.add(
+            f"{status_letter}2:{status_letter}5000",
+            CellIsRule(operator="equal", formula=[f'"{status}"'], fill=fill),
+        )
     ws.conditional_formatting.add(
-        "L2:L5000",
-        CellIsRule(operator="equal", formula=['"Open"'], fill=FILL_OPEN),
-    )
-    ws.conditional_formatting.add(
-        "L2:L5000",
-        CellIsRule(operator="equal", formula=['"New"'], fill=FILL_OPEN),
-    )
-    ws.conditional_formatting.add(
-        "L2:L5000",
-        CellIsRule(operator="equal", formula=['"In Progress"'], fill=FILL_IN_PROGRESS),
-    )
-    ws.conditional_formatting.add(
-        "L2:L5000",
-        CellIsRule(operator="equal", formula=['"Pending"'], fill=FILL_PENDING),
-    )
-    ws.conditional_formatting.add(
-        "L2:L5000",
-        CellIsRule(operator="equal", formula=['"Closed"'], fill=FILL_CLOSED),
-    )
-    # High priority highlight on Priority column
-    ws.conditional_formatting.add(
-        "I2:I5000",
+        f"{priority_letter}2:{priority_letter}5000",
         CellIsRule(operator="equal", formula=['"High"'], fill=FILL_HIGH),
     )
-    # Missing assignment
     ws.conditional_formatting.add(
-        "M2:M5000",
+        f"{engineer_letter}2:{engineer_letter}5000",
         CellIsRule(operator="equal", formula=['"Unassigned"'], fill=FILL_MISSING),
     )
-    # Overdue / negative SLA remaining
     ws.conditional_formatting.add(
-        "AA2:AA5000",
+        f"{sla_letter}2:{sla_letter}5000",
         CellIsRule(operator="lessThan", formula=["0"], fill=FILL_OVERDUE),
     )
 
     autosize(ws)
-    ws.column_dimensions["G"].width = 36
-    ws.column_dimensions["H"].width = 48
-    ws.column_dimensions["U"].width = 28
-    ws.column_dimensions["V"].width = 28
+    ws.column_dimensions[col_letter("Subject")].width = 36
+    ws.column_dimensions[col_letter("Email Body")].width = 48
+    ws.column_dimensions[col_letter("Resolution Notes")].width = 28
+    ws.column_dimensions[col_letter("Internal Remarks")].width = 28
+    ws.column_dimensions[col_letter("AI Issue Summary")].width = 40
+    ws.column_dimensions[col_letter("AI Scope")].width = 28
 
 
 def build_audit_log(wb: Workbook) -> None:
@@ -545,24 +616,33 @@ def build_dashboard(wb: Workbook) -> None:
     ws["B3"] = "Value"
     style_header_row(ws, 3, 2)
 
-    # Tickets columns: A=TicketID, I=Priority, L=Status, M=AssignedEngineer, Z=TicketAgeDays
+    status_l = col_letter("Status")
+    priority_l = col_letter("Priority")
+    engineer_l = col_letter("Assigned Engineer")
+    age_l = col_letter("Ticket Age Days")
+    ticket_l = col_letter("Ticket ID")
+
     metrics = [
-        ("Total Tickets", '=COUNTA(Tickets!$A$2:$A$5000)'),
+        ("Total Tickets", f'=COUNTA(Tickets!${ticket_l}$2:${ticket_l}$5000)'),
         (
             "Open (New+Open)",
-            '=COUNTIF(Tickets!$L$2:$L$5000,"New")+COUNTIF(Tickets!$L$2:$L$5000,"Open")',
+            f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"New")'
+            f'+COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"Open")',
         ),
-        ("In Progress", '=COUNTIF(Tickets!$L$2:$L$5000,"In Progress")'),
-        ("Pending", '=COUNTIF(Tickets!$L$2:$L$5000,"Pending")'),
-        ("Closed", '=COUNTIF(Tickets!$L$2:$L$5000,"Closed")'),
+        ("In Progress", f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"In Progress")'),
+        ("Pending", f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"Pending")'),
+        ("Needs Review", f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"Needs Review")'),
+        ("Closed", f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"Closed")'),
         (
             "High Priority Open",
-            '=COUNTIFS(Tickets!$I$2:$I$5000,"High",Tickets!$L$2:$L$5000,"<>Closed")',
+            f'=COUNTIFS(Tickets!${priority_l}$2:${priority_l}$5000,"High",'
+            f'Tickets!${status_l}$2:${status_l}$5000,"<>Closed")',
         ),
-        ("Unassigned", '=COUNTIF(Tickets!$M$2:$M$5000,"Unassigned")'),
+        ("Unassigned", f'=COUNTIF(Tickets!${engineer_l}$2:${engineer_l}$5000,"Unassigned")'),
         (
             "Avg Age (Open Days)",
-            '=IFERROR(AVERAGEIF(Tickets!$L$2:$L$5000,"<>Closed",Tickets!$Z$2:$Z$5000),0)',
+            f'=IFERROR(AVERAGEIF(Tickets!${status_l}$2:${status_l}$5000,"<>Closed",'
+            f'Tickets!${age_l}$2:${age_l}$5000),0)',
         ),
     ]
     for i, (label, formula) in enumerate(metrics, start=4):
@@ -582,11 +662,12 @@ def build_dashboard(wb: Workbook) -> None:
         cell.border = THIN
 
     status_rows = [
-        ("New", '=COUNTIF(Tickets!$L$2:$L$5000,"New")'),
-        ("Open", '=COUNTIF(Tickets!$L$2:$L$5000,"Open")'),
-        ("In Progress", '=COUNTIF(Tickets!$L$2:$L$5000,"In Progress")'),
-        ("Pending", '=COUNTIF(Tickets!$L$2:$L$5000,"Pending")'),
-        ("Closed", '=COUNTIF(Tickets!$L$2:$L$5000,"Closed")'),
+        ("New", f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"New")'),
+        ("Open", f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"Open")'),
+        ("In Progress", f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"In Progress")'),
+        ("Pending", f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"Pending")'),
+        ("Needs Review", f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"Needs Review")'),
+        ("Closed", f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"Closed")'),
     ]
     for i, (label, formula) in enumerate(status_rows, start=4):
         ws.cell(row=i, column=4, value=label).border = THIN
@@ -594,13 +675,13 @@ def build_dashboard(wb: Workbook) -> None:
 
     pie = PieChart()
     pie.title = "Tickets by Status"
-    labels = Reference(ws, min_col=4, min_row=4, max_row=8)
-    data = Reference(ws, min_col=5, min_row=3, max_row=8)
+    labels = Reference(ws, min_col=4, min_row=4, max_row=9)
+    data = Reference(ws, min_col=5, min_row=3, max_row=9)
     pie.add_data(data, titles_from_data=True)
     pie.set_categories(labels)
     pie.width = 12
     pie.height = 8
-    ws.add_chart(pie, "A14")
+    ws.add_chart(pie, "A15")
 
     # Priority breakdown
     ws["G3"] = "Priority"
@@ -614,7 +695,11 @@ def build_dashboard(wb: Workbook) -> None:
 
     for i, p in enumerate(PRIORITIES, start=4):
         ws.cell(row=i, column=7, value=p).border = THIN
-        ws.cell(row=i, column=8, value=f'=COUNTIF(Tickets!$I$2:$I$5000,"{p}")').border = THIN
+        ws.cell(
+            row=i,
+            column=8,
+            value=f'=COUNTIF(Tickets!${priority_l}$2:${priority_l}$5000,"{p}")',
+        ).border = THIN
 
     bar = BarChart()
     bar.type = "col"
@@ -626,20 +711,21 @@ def build_dashboard(wb: Workbook) -> None:
     bar.shape = 4
     bar.width = 12
     bar.height = 8
-    ws.add_chart(bar, "G14")
+    ws.add_chart(bar, "G15")
 
-    ws["A24"] = "Engineer Workload (non-closed)"
-    ws["A24"].font = SECTION_FONT
-    ws["A25"] = "Engineer"
-    ws["B25"] = "Open Tickets"
-    style_header_row(ws, 25, 2)
-    for i, eng in enumerate(ENGINEERS, start=26):
+    ws["A25"] = "Engineer Workload (non-closed)"
+    ws["A25"].font = SECTION_FONT
+    ws["A26"] = "Engineer"
+    ws["B26"] = "Open Tickets"
+    style_header_row(ws, 26, 2)
+    for i, eng in enumerate(ENGINEERS, start=27):
         ws.cell(row=i, column=1, value=eng).border = THIN
         ws.cell(
             row=i,
             column=2,
             value=(
-                f'=COUNTIFS(Tickets!$M$2:$M$5000,A{i},Tickets!$L$2:$L$5000,"<>Closed")'
+                f'=COUNTIFS(Tickets!${engineer_l}$2:${engineer_l}$5000,A{i},'
+                f'Tickets!${status_l}$2:${status_l}$5000,"<>Closed")'
             ),
         ).border = THIN
 
@@ -653,6 +739,11 @@ def build_reports(wb: Workbook) -> None:
     ws["A1"] = "Monthly / Trend Reports"
     ws["A1"].font = TITLE_FONT
 
+    cat_l = col_letter("Category")
+    dept_l = col_letter("Department")
+    status_l = col_letter("Status")
+    ticket_l = col_letter("Ticket ID")
+
     ws["A3"] = "Category Statistics"
     ws["A3"].font = SECTION_FONT
     ws["A4"] = "Category"
@@ -660,7 +751,11 @@ def build_reports(wb: Workbook) -> None:
     style_header_row(ws, 4, 2)
     for i, cat in enumerate(CATEGORIES, start=5):
         ws.cell(row=i, column=1, value=cat).border = THIN
-        ws.cell(row=i, column=2, value=f'=COUNTIF(Tickets!$J$2:$J$5000,A{i})').border = THIN
+        ws.cell(
+            row=i,
+            column=2,
+            value=f'=COUNTIF(Tickets!${cat_l}$2:${cat_l}$5000,A{i})',
+        ).border = THIN
 
     ws["D3"] = "Department Statistics"
     ws["D3"].font = SECTION_FONT
@@ -673,15 +768,22 @@ def build_reports(wb: Workbook) -> None:
         cell.border = THIN
     for i, dept in enumerate(DEPARTMENTS, start=5):
         ws.cell(row=i, column=4, value=dept).border = THIN
-        ws.cell(row=i, column=5, value=f'=COUNTIF(Tickets!$K$2:$K$5000,D{i})').border = THIN
+        ws.cell(
+            row=i,
+            column=5,
+            value=f'=COUNTIF(Tickets!${dept_l}$2:${dept_l}$5000,D{i})',
+        ).border = THIN
 
     ws["A16"] = "Closed / Open totals"
     ws["A16"].font = SECTION_FONT
     ws["A17"] = "Note: CreatedDate is a real Excel date — filter or pivot by month as needed."
     ws["A18"] = "Closed Count (all time)"
-    ws["B18"] = '=COUNTIF(Tickets!$L$2:$L$5000,"Closed")'
+    ws["B18"] = f'=COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"Closed")'
     ws["A19"] = "Open Count (all non-closed)"
-    ws["B19"] = '=COUNTA(Tickets!$A$2:$A$5000)-COUNTIF(Tickets!$L$2:$L$5000,"Closed")'
+    ws["B19"] = (
+        f'=COUNTA(Tickets!${ticket_l}$2:${ticket_l}$5000)'
+        f'-COUNTIF(Tickets!${status_l}$2:${status_l}$5000,"Closed")'
+    )
 
     autosize(ws)
 
@@ -690,7 +792,6 @@ def _fix_chart_category_refs(xlsx_path: Path) -> None:
     """openpyxl emits numRef for text category axes → Excel shows #REF!/blank charts.
     Rewrite category refs to strRef.
     """
-    import tempfile
     import shutil
 
     tmp = xlsx_path.with_suffix(".tmp.xlsx")
@@ -709,6 +810,128 @@ def _fix_chart_category_refs(xlsx_path: Path) -> None:
                 data = text.encode("utf-8")
             zout.writestr(item, data)
     shutil.move(tmp, xlsx_path)
+
+
+def verify_workbook(xlsx_path: Path) -> list[str]:
+    """Return a list of verification errors (empty = PASS)."""
+    from openpyxl import load_workbook
+
+    errors: list[str] = []
+    wb = load_workbook(xlsx_path, data_only=False)
+
+    required_sheets = [
+        "Dashboard",
+        "Tickets",
+        "Configuration",
+        "Categories",
+        "Users",
+        "Audit Log",
+        "Reports",
+    ]
+    for name in required_sheets:
+        if name not in wb.sheetnames:
+            errors.append(f"Missing sheet: {name}")
+
+    if "Tickets" in wb.sheetnames:
+        ws = wb["Tickets"]
+        headers = [ws.cell(1, c).value for c in range(1, len(TICKET_COLUMNS) + 1)]
+        if headers != TICKET_COLUMNS:
+            errors.append(
+                f"Tickets headers mismatch.\n  expected={TICKET_COLUMNS}\n  actual={headers}"
+            )
+        tables = getattr(ws, "tables", {}) or {}
+        if "ITTickets" not in tables:
+            errors.append("Missing Excel table ITTickets on Tickets sheet")
+        else:
+            expected_ref = f"A1:{get_column_letter(len(TICKET_COLUMNS))}{max(ws.max_row, 2)}"
+            actual_ref = tables["ITTickets"].ref
+            # Allow table to cover sample rows; end col must match
+            if not str(actual_ref).startswith(f"A1:{get_column_letter(len(TICKET_COLUMNS))}"):
+                errors.append(f"ITTickets ref column mismatch: {actual_ref} (expected start {expected_ref})")
+
+        # Age/SLA formulas must reference Status / Priority / Age letters derived from headers
+        status_l = col_letter("Status")
+        priority_l = col_letter("Priority")
+        age_l = col_letter("Ticket Age Days")
+        age_col = col_index("Ticket Age Days")
+        sla_col = col_index("SLA Remaining Hours")
+        for r in range(2, min(ws.max_row, 5) + 1):
+            age_f = ws.cell(r, age_col).value
+            sla_f = ws.cell(r, sla_col).value
+            if not isinstance(age_f, str) or not age_f.startswith("="):
+                errors.append(f"Tickets!{get_column_letter(age_col)}{r} missing age formula")
+            elif f"{status_l}{r}" not in age_f:
+                errors.append(f"Age formula row {r} missing Status col {status_l}")
+            if not isinstance(sla_f, str) or not sla_f.startswith("="):
+                errors.append(f"Tickets!{get_column_letter(sla_col)}{r} missing SLA formula")
+            elif f"{priority_l}{r}" not in sla_f or f"{age_l}{r}" not in sla_f:
+                errors.append(f"SLA formula row {r} missing Priority/Age refs")
+
+        for required in (
+            "Processing Stage",
+            "Ack Sent",
+            "AI Issue Summary",
+            "AI Priority",
+            "AI Scope",
+        ):
+            if required not in headers:
+                errors.append(f"Missing required column: {required}")
+
+    if "Audit Log" in wb.sheetnames:
+        aws = wb["Audit Log"]
+        audit_headers = [aws.cell(1, c).value for c in range(1, len(AUDIT_COLUMNS) + 1)]
+        if audit_headers != AUDIT_COLUMNS:
+            errors.append(f"Audit Log headers mismatch: {audit_headers}")
+        if "AuditLog" not in (getattr(aws, "tables", {}) or {}):
+            errors.append("Missing Excel table AuditLog")
+
+    # Named ranges required for dropdowns / SLA
+    defined = {name for name in wb.defined_names}
+    for name in (
+        "SLA_High",
+        "SLA_Medium",
+        "SLA_Low",
+        "List_Status",
+        "List_Priority",
+        "List_Categories",
+        "List_ProcessingStage",
+        "List_AckSent",
+        "List_AIPriority",
+    ):
+        if name not in defined:
+            errors.append(f"Missing defined name: {name}")
+
+    # Dashboard / Reports must not contain #REF!
+    for sheet_name in ("Dashboard", "Reports"):
+        if sheet_name not in wb.sheetnames:
+            continue
+        sw = wb[sheet_name]
+        for row in sw.iter_rows(max_row=40, max_col=10):
+            for cell in row:
+                if isinstance(cell.value, str) and "#REF!" in cell.value:
+                    errors.append(f"{sheet_name}!{cell.coordinate} contains #REF!")
+
+    # Spot-check Dashboard Status/Priority/Age letters match current schema
+    if "Dashboard" in wb.sheetnames:
+        dash = wb["Dashboard"]
+        status_l = col_letter("Status")
+        age_l = col_letter("Ticket Age Days")
+        found_status = False
+        found_age = False
+        for row in dash.iter_rows(min_row=3, max_row=20, max_col=2):
+            for cell in row:
+                if isinstance(cell.value, str):
+                    if f"Tickets!${status_l}$" in cell.value:
+                        found_status = True
+                    if f"Tickets!${age_l}$" in cell.value:
+                        found_age = True
+        if not found_status:
+            errors.append(f"Dashboard formulas missing Status column ${status_l}$")
+        if not found_age:
+            errors.append(f"Dashboard formulas missing Age column ${age_l}$")
+
+    wb.close()
+    return errors
 
 
 def generate(output: Path) -> Path:
@@ -732,15 +955,24 @@ def generate(output: Path) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output)
     _fix_chart_category_refs(output)
+
+    errors = verify_workbook(output)
+    if errors:
+        print("Workbook verification FAILED:")
+        for err in errors:
+            print(f"  - {err}")
+        raise SystemExit(1)
+    print("Workbook verification PASS")
     return output
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate IT Support Tickets workbook")
+    default_out = Path(__file__).resolve().parent.parent / "assets" / "IT Support Tickets.xlsx"
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).resolve().parent / "IT Support Tickets.xlsx",
+        default=default_out,
         help="Output .xlsx path",
     )
     args = parser.parse_args()

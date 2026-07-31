@@ -4,16 +4,16 @@ overview: Upgrade the production Main workflow (via `_build_workflows.py`) and E
 todos:
   - id: excel-schema
     content: "Extend generate_it_support_workbook.py: Processing Stage, Ack Sent, AI columns; index-based formulas; Needs Review status; folder labels; verifier; regenerate assets xlsx"
-    status: pending
+    status: completed
   - id: workflow-recovery
     content: "Update _build_workflows.py: Ack resume branch, stage updates via Excel table update, 3-folder moves, drop Filtered/NeedsReview"
-    status: pending
+    status: completed
   - id: workflow-ai
     content: Add Basic LLM Chain + Structured Output Parser + OpenRouter Chat Model (continueOnFail + defaults) wired into create path
-    status: pending
+    status: completed
   - id: emit-docs
     content: Regenerate workflows JSON; update WORKFLOW_GUIDE.md; grep for stale refs; document OpenRouter/Groq credential steps
-    status: pending
+    status: completed
 isProject: false
 ---
 

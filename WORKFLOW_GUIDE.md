@@ -2,7 +2,7 @@
 
 Production IT Helpdesk ticketing for **n8n + Microsoft Outlook + Excel (OneDrive/SharePoint)**.
 
-This guide explains the single Main workflow, the Error Notifier companion, the Excel workbook, prerequisites, and how to debug failures.
+This guide explains the Main workflow (v2 fault-tolerant), the Error Notifier companion, the Excel workbook, AI summarization credentials, and how to debug failures.
 
 ---
 
@@ -10,16 +10,17 @@ This guide explains the single Main workflow, the Error Notifier companion, the 
 
 | File | Purpose |
 |------|---------|
-| [IT_Ticketing_Main.json](IT_Ticketing_Main.json) | **Only business workflow** — Outlook Trigger → ticket → ReplyAll → folder move |
-| [IT_Ticketing_Error_Notifier.json](IT_Ticketing_Error_Notifier.json) | Alerts admin when Main fails (n8n requires Error Trigger in a separate workflow) |
-| [generate_it_support_workbook.py](generate_it_support_workbook.py) | Builds the Excel workbook (tables, dropdowns, dashboard, audit log) |
-| [IT Support Tickets.xlsx](IT%20Support%20Tickets.xlsx) | Generated workbook — upload to OneDrive/SharePoint |
-| `ClaudeFlows/` | Previous complex design — **do not use**; kept for reference only |
-| `IT Support Ticketing - v2.0.json` | Previous schedule-based flow — superseded by Main |
+| [workflows/IT_Ticketing_Main.json](workflows/IT_Ticketing_Main.json) | **Business workflow** — Outlook Trigger → AI summary → ticket → ack → folder move (with ack resume) |
+| [workflows/IT_Ticketing_Error_Notifier.json](workflows/IT_Ticketing_Error_Notifier.json) | Alerts admin when Main fails (n8n requires Error Trigger in a separate workflow) |
+| [scripts/generate_it_support_workbook.py](scripts/generate_it_support_workbook.py) | Builds the Excel workbook (tables, dropdowns, dashboard, audit log, AI/stage columns) |
+| [scripts/_build_workflows.py](scripts/_build_workflows.py) | Regenerates Main + Error Notifier JSON |
+| [assets/IT Support Tickets.xlsx](assets/IT%20Support%20Tickets.xlsx) | Generated workbook v2.0 — upload to OneDrive/SharePoint |
+| `workflows/ClaudeFlows/` | Previous complex design — **do not use**; kept for reference only |
+| `workflows/v2 - current working/` | Previous schedule-based flow — superseded by Main |
 
 ---
 
-## Architecture (simple)
+## Architecture
 
 ```text
 Email arrives in IT Support Inbox
@@ -30,34 +31,46 @@ Outlook Trigger (one execution = one email)
         ▼
 Extract / filter (drop self-sent & auto-replies)
         │
-        ├── drop ──► Move to Filtered ──► STOP
+        ├── drop ──► Move to Processed ──► STOP
         │
         ▼
-Excel lookup by ConversationID
+Excel lookup by Conversation ID
         │
-        ├── found (follow-up) ──► Move to Processed/Open Tickets ──► STOP
-        │                          (no new ticket, no ack)
-        ▼
+        ├── found + Ack Sent = Yes ──► Move to Open Tickets ──► STOP
+        │
+        ├── found + Ack Sent ≠ Yes ──► Resume Reply → Mark Ack → Move → Mark Complete
+        │
+        ▼ (new conversation)
 Generate ticket ID  NGI-<ddmmyy>-<XXXX>
         │
         ▼
-Excel lookup TicketID (retry generate up to 5× if collision)
+Excel lookup Ticket ID (retry generate up to 5× if collision)
         │
         ▼
 Data Guard (required fields)
         │
-        ├── invalid ──► Move to NeedsReview ──► STOP
+        ├── invalid ──► Create Needs Review row → Move to Open Tickets
+        │
         ▼
-Excel append ticket row
+AI Summarize (OpenRouter / optional Groq) → Merge with defaults if AI fails
+        │
+        ▼
+Excel append ticket (Processing Stage=Created, Ack Sent=No, AI fields)
         │
         ▼
 Excel append AuditLog (non-blocking if this fails)
         │
         ▼
-Outlook ReplyAll (HTML ack, keeps CCs on thread)
+Outlook Reply (Reply All HTML ack)
         │
         ▼
-Move to Processed/Open Tickets
+Excel update Ack Sent=Yes, Processing Stage=Acked
+        │
+        ▼
+Move to Open Tickets
+        │
+        ▼
+Excel update Processing Stage=Complete, Folder=Open Tickets
 ```
 
 Unhandled errors anywhere → **Error Notifier** emails the admin.
@@ -70,22 +83,26 @@ Unhandled errors anywhere → **Error Notifier** emails the admin.
 
 ### Outlook Trigger only (no Schedule)
 
-Matches the requirement. Each new Inbox message starts one execution. Reliability comes from:
+Each new Inbox message starts one execution. Reliability comes from:
 
 1. **Move out of Inbox** after success / follow-up / drop / invalid  
-2. **ConversationID idempotency** — retries or duplicate Graph events cannot create a second ticket  
-3. **Workflow concurrency = 1** — serial executions; no Excel race conditions (replaces ClaudeFlows’ lock sheet)
+2. **Conversation ID idempotency** — retries cannot create a second ticket  
+3. **Ack Sent + Processing Stage** — resume acknowledgement if reply failed after Excel write  
+4. **Workflow concurrency = 1** — serial executions; no Excel race conditions  
 
-**Honest caveat:** Microsoft Graph webhooks can rarely miss an event. If that appears in production, add a thin reconciliation later. It is intentionally **out of v1** so the system stays debuggable.
+**No Excel lock sheet.** ClaudeFlows-style `WorkflowLocks` are intentionally not used.
 
-### New vs follow-up
+**Honest caveat:** Microsoft Graph webhooks can rarely miss an event. If that appears in production, add a thin reconciliation later.
 
-**Primary key:** Excel `ConversationID` (Outlook conversation id).
+### New vs follow-up vs resume
 
-- Same thread → existing ticket → move only, no ack, no new row  
-- New conversation → create ticket  
+**Primary key:** Excel `Conversation ID`.
 
-Subject matching `NGI-…` is not required for correctness; ConversationID is the source of truth.
+| Lookup result | Behavior |
+|---------------|----------|
+| No row | Create new ticket path |
+| Row exists, `Ack Sent` = Yes | Follow-up: move to Open Tickets only (no second ack) |
+| Row exists, `Ack Sent` ≠ Yes | **Resume:** send ack using existing Ticket ID, then mark Acked → Complete |
 
 ### Ticket ID format
 
@@ -96,30 +113,55 @@ NGI-<ddmmyy>-<XXXX>
 Example: `NGI-310726-A7K9`
 
 - `XXXX` = random A–Z / 0–9  
-- Before write: Excel lookup on `TicketID`; on hit, regenerate (max 5 attempts)  
-- With concurrency 1, collisions are extremely rare  
+- Before write: Excel lookup on `Ticket ID`; on hit, regenerate (max 5 attempts)  
 
 ### Order of operations (partial failure safety)
 
-1. Write Excel row **first**  
-2. ReplyAll  
-3. Move folder  
+1. Write Excel row first (`Ack Sent=No`, `Processing Stage=Created`)  
+2. Audit (optional)  
+3. Reply  
+4. Update `Ack Sent=Yes` / `Acked`  
+5. Move folder  
+6. Update `Complete`  
 
 | Failure point | Result | Recovery |
 |---------------|--------|----------|
-| Excel fails | No ticket, no reply; email still in Inbox | Error alert; Graph may retry; or manual reprocess |
-| Reply fails after Excel | Ticket exists; user got no ack | Error alert; ConversationID blocks duplicate; manual reply possible |
-| Move fails after reply | Ticket + ack done; mail still in Inbox | Error alert; next same-conversation mail is treated as follow-up |
+| Excel fails | No ticket, no reply; email still in Inbox | Error alert; Graph may retry |
+| Reply fails after Excel | Ticket exists; user got no ack; `Ack Sent=No` | Next same Conversation ID → **resume ack** (no duplicate) |
+| Move fails after ack | Ticket + ack done; mail still in Inbox | Next run: Ack=Yes → move-only follow-up |
+| AI fails | Defaults filled from body/priority/sender | Ticketing continues (`continueOnFail`) |
+
+### Stage flag writes (no Excel Table `update`)
+
+The official n8n **Microsoft Excel (OneDrive)** node Table resource only supports: **append**, **getRows**, **getColumns**, **lookup** — there is **no `update` operation** ([docs](https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.microsoftexcel/)).
+
+Ack / Complete flags are written with the documented fallback:
+
+1. Excel **getRows** on `ITTickets` (find row by `Ticket ID`)
+2. Code node computes Excel cell addresses (`Z`/`AA`/`R`/`S`)
+3. **HTTP Request** `PATCH` Microsoft Graph [range update](https://learn.microsoft.com/en-us/graph/api/range-update) using the existing **Microsoft Excel OAuth2** credential ([custom API actions](https://docs.n8n.io/integrations/builtin/custom-api-actions-for-existing-nodes/))
+
+### Folders (three only)
+
+```text
+Inbox
+Open Tickets
+Processed
+```
+
+| Folder | Used by workflow | Purpose |
+|--------|------------------|---------|
+| Inbox | Trigger source | New requests |
+| Open Tickets | Auto | Active tickets, follow-ups, invalid (Needs Review status) |
+| Processed | Auto | Dropped self-sent / OOO; closed tickets (manual) |
 
 ### CC handling
 
-Extract stores `ccEmails`. Ack uses Outlook **ReplyAll**, so original CCs stay on the thread.
+Extract stores `ccEmails`. Ack uses Outlook reply with `replyToSenderOnly=false` (Graph Reply All), so original CCs stay on the thread.
 
 ### Concurrency
 
 Set Main → Settings → **Concurrency = 1**.
-
-n8n may receive many trigger events at once; they queue. Each execution is isolated; Excel writes never overlap. That satisfies “Email A must never get Email B’s ticket ID” without a lock table.
 
 ---
 
@@ -128,124 +170,79 @@ n8n may receive many trigger events at once; they queue. Each execution is isola
 ### 1. n8n & Microsoft
 
 - [ ] n8n instance with a **public HTTPS URL** (required for Outlook Trigger / Graph webhooks)  
-- [ ] Credential: **Microsoft Outlook OAuth2** on the IT Support mailbox (`IT Support Microsoft Outlook`)  
-- [ ] Credential: **Microsoft Excel OAuth2** for the same account’s OneDrive/SharePoint (`IT Support NGI Microsoft Excel`)  
+- [ ] Credential: **Microsoft Outlook OAuth2** on the IT Support mailbox  
+- [ ] Credential: **Microsoft Excel OAuth2** for the same account’s OneDrive/SharePoint  
+- [ ] Credential: **OpenRouter** (or **Groq**) for AI summarization — see below  
 
 ### 2. Outlook folders
 
-Create under the IT Support mailbox:
+Create under the IT Support mailbox root:
 
 ```text
 Inbox
-Filtered
-NeedsReview
+Open Tickets
 Processed
- ├── Open Tickets
- ├── Pending
- └── Closed
-Archive
- └── Archived Tickets
 ```
-
-| Folder | Used by workflow | Purpose |
-|--------|------------------|---------|
-| Inbox | Trigger source | New requests |
-| Filtered | Auto | Self-sent / OOO / bounce drops |
-| NeedsReview | Auto | Invalid / missing data |
-| Processed/Open Tickets | Auto | Created tickets + follow-ups |
-| Pending / Closed / Archive | Humans | Ops lifecycle |
 
 After import, open **every Move node** and reselect the folder (IDs are tenant-specific).
 
 ### 3. Excel workbook
 
 ```bash
-python generate_it_support_workbook.py
-# or overwrite a renamed copy:
-python generate_it_support_workbook.py --output "IT Support Tickets NGI.xlsx"
+python scripts/generate_it_support_workbook.py
+# optional NGI-named copy:
+python scripts/generate_it_support_workbook.py --output "assets/IT Support Tickets NGI.xlsx"
 ```
 
-Upload `IT Support Tickets.xlsx` (or your renamed copy) to the IT Support OneDrive/SharePoint.
+The script prints **Workbook verification PASS** (or fails) before you upload.
 
-**Note:** Dashboard/Reports use `Tickets!` cell ranges (not structured table refs) to avoid `#REF!` in Excel Online. `CreatedDate` / `ClosedDate` are real Excel dates; age/SLA formulas use named cells `SLA_High` / `SLA_Medium` / `SLA_Low`. Excel table names cannot contain spaces, so the Tickets table is named `ITTickets` (no underscore).
+Upload the xlsx to IT Support OneDrive/SharePoint. In every Excel node, reselect workbook + `Tickets`/`ITTickets` + `Audit Log`/`AuditLog`.
 
-Sheets:
+Sheets: Dashboard, Tickets (`ITTickets`), Configuration, Categories, Users, Audit Log (`AuditLog`), Reports.
 
-| Sheet | Purpose |
-|-------|---------|
-| Dashboard | Counts, charts, engineer workload |
-| Tickets | Table `ITTickets` — source of truth |
-| Configuration | Prefix, SLA hours, admin email, ack text |
-| Categories | Dropdown list |
-| Users | Engineers + named ranges for Status/Priority/etc. |
-| Audit Log | Table `AuditLog` |
-| Reports | Category / department stats |
+### 4. AI credentials (OpenRouter default)
 
-In every Excel node, reselect:
+1. Create an API key at [openrouter.ai/keys](https://openrouter.ai/keys)  
+2. In n8n: **Credentials → Add → OpenRouter** → paste the key  
+   ([official docs](https://docs.n8n.io/integrations/builtin/credentials/openrouter/))  
+3. Open **IT Ticketing - Main** → node **OpenRouter Chat Model** → select the credential  
+4. Pick a free/cheap model from the dropdown (placeholder in JSON is `openai/gpt-4o-mini`)  
+5. Save and activate; send a test email; confirm `AI Issue Summary` / `AI Priority` / `AI Scope` populate  
 
-- Workbook: `IT Support Tickets`  
-- Worksheet/table: `Tickets` / `ITTickets`  
-- Audit: `Audit Log` / `AuditLog`  
+#### Optional: swap to Groq
 
-### 4. Wire Error Notifier
+1. Create a key in the [Groq console](https://console.groq.com/)  
+2. n8n: **Credentials → Add → Groq** ([docs](https://docs.n8n.io/integrations/builtin/credentials/groq/))  
+3. Replace the **OpenRouter Chat Model** sub-node with **Groq Chat Model**, attach credential, pick a model  
+4. Leave **AI - Summarize Email** (Basic LLM Chain) and **Structured Output Parser** unchanged  
+
+### 5. Wire Error Notifier
 
 1. Import & **activate** `IT Ticketing - Error Notifier`  
 2. Main → Settings → **Error Workflow** → select Error Notifier  
 3. Update **toRecipients** (`it-admin@nextgeninnov8.com` placeholder)  
 
-### 5. Main settings
+### 6. Main settings
 
 - [ ] Concurrency = **1**  
-- [ ] Save successful & failed executions (debugging)  
+- [ ] Save successful & failed executions  
 - [ ] Confirm Extract node self-send filter matches your mailbox  
+- [ ] OpenRouter (or Groq) credential attached  
 - [ ] Activate Main  
 
 ---
 
-## Node-by-node (Main)
+## Tickets table columns
 
-| # | Node | What it does | If it fails / how to debug |
-|---|------|--------------|----------------------------|
-| 1 | Outlook Trigger - New Mail | Fires on new Inbox mail | Never fires → n8n not publicly reachable, wrong mailbox credential, or trigger event misconfigured |
-| 2 | Extract, Filter & Prioritize | Flattens Graph message; sets `shouldProcess`, priority, CCs | Check output JSON: `messageId`, `conversationId`, `senderEmail` |
-| 3 | IF - Should Process? | Routes drops | False → Filtered path |
-| 4 | Move - Dropped to Filtered | Removes noise from Inbox | Folder ID wrong if move fails |
-| 5 | Excel - Lookup by ConversationID | `alwaysOutputData: true` | Empty match = new ticket; wrong table/column names break dedupe |
-| 6 | Check If Ticket Exists | Sets `ticketExists` | Inspect `TicketID` / `ConversationID` on lookup output |
-| 7 | IF - Ticket Already Exists? | Follow-up vs new | True = follow-up |
-| 8 | Move - Follow-up to Open Tickets | No second ticket | — |
-| 9 | Generate Ticket ID | `NGI-ddmmyy-XXXX` + dates | Wrong format here = prompt violation |
-| 10 | Excel - Lookup TicketID | Uniqueness | — |
-| 11 | Check Ticket ID Collision | `needsRetry` / `idExhausted` | Exhausted → Data Guard fails → NeedsReview |
-| 12 | IF - ID Collision Retry? | True → back to Generate | Loop max 5 |
-| 13 | Data Guard Validation | Required fields | `validationErrors` in output |
-| 14 | IF - Valid Ticket Data? | Create vs NeedsReview | — |
-| 15 | Move - Invalid to NeedsReview | Manual triage | — |
-| 16 | Excel - Create Ticket Row | Appends full ticket | Column name mismatch = common failure; reselect table after new workbook |
-| 17 | Excel - Audit Log Created | `continueOnFail: true` | Audit failure does not block ack |
-| 18 | Prepare Reply Payload | Rebuilds reply fields from Data Guard | Throws if `messageId` missing |
-| 19 | Reply to Requester (HTML) | Ack in same thread; `replyToSenderOnly=false` = Reply All (CCs kept) | Graph permission / message already moved |
-| 20 | Move - Success to Open Tickets | Leaves Inbox | — |
+Spaced headers (exact):
 
-Sticky notes on the canvas repeat Setup + Debug map.
+`Ticket ID`, `Created Date`, `Created Time`, `Requester Name`, `Requester Email`, `CC Emails`, `Subject`, `Email Body`, `Priority`, `Category`, `Department`, `Status`, `Assigned Engineer`, `Conversation ID`, `Internet Message ID`, `Conversation Index`, `Message Id`, `Folder`, `Last Updated`, `Closed Date`, `Resolution Notes`, `Internal Remarks`, `Escalation Level`, `Resolution`, `Closure Reason`, **`Processing Stage`**, **`Ack Sent`**, **`AI Issue Summary`**, **`AI Priority`**, **`AI Scope`**, `Ticket Age Days`, `SLA Remaining Hours`
 
----
+Defaults on create: Status=`New`, Category/Department=`Other`, AssignedEngineer=`Unassigned`, EscalationLevel=`L1`, Processing Stage=`Created`, Ack Sent=`No`.
 
-## Tickets table columns (written by workflow)
+Invalid path: Status=`Needs Review`, Processing Stage=`NeedsReview`.
 
-`TicketID`, `CreatedDate`, `CreatedTime`, `RequesterName`, `RequesterEmail`, `CCEmails`, `Subject`, `EmailBody`, `Priority`, `Category`, `Department`, `Status`, `AssignedEngineer`, `ConversationID`, `InternetMessageID`, `ConversationIndex`, `MessageId`, `Folder`, `LastUpdated`, `ClosedDate`, `ResolutionNotes`, `InternalRemarks`, `EscalationLevel`, `Resolution`, `ClosureReason`
-
-Defaults on create: Status=`New`, Category/Department=`Other`, AssignedEngineer=`Unassigned`, EscalationLevel=`L1`.
-
-`TicketAgeDays` / `SLARemainingHours` are Excel formulas (not written by n8n).
-
----
-
-## Error Notifier
-
-1. Error Trigger  
-2. Format Error Details (workflow name, failed node, message, link)  
-3. Send Alert Email to IT Admin  
+`Ticket Age Days` / `SLA Remaining Hours` are Excel formulas (not written by n8n).
 
 ---
 
@@ -253,52 +250,45 @@ Defaults on create: Status=`New`, Category/Department=`Other`, AssignedEngineer=
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| Trigger never runs | No public webhook URL | Put n8n behind HTTPS reverse proxy / use n8n Cloud |
-| Infinite ack loop | Self filter missing / Filtered move broken | Confirm mailbox in Extract; fix Filtered folder |
-| Duplicate tickets | ConversationID column mismatch or concurrency > 1 | Reselect Excel table; set concurrency 1 |
-| Excel append error | Column names differ from workbook | Regenerate workbook; reselect columns |
-| Reply fails | Invalid `messageId` or message already deleted | Check Prepare Reply Payload output |
-| Move fails | Folder not reselected after import | Open Move node → pick folder from list |
+| Trigger never runs | No public webhook URL | Put n8n behind HTTPS / use n8n Cloud |
+| Infinite ack loop | Self filter missing / drop move broken | Confirm mailbox in Extract; fix Processed folder |
+| Duplicate tickets | Column mismatch or concurrency > 1 | Reselect Excel table; set concurrency 1 |
+| Ticket without ack email | Reply failed after create | Re-trigger same thread or wait for Graph retry — resume path sends ack |
+| Excel append/update error | Column names differ from workbook | Regenerate v2.0 workbook; reselect columns |
+| AI columns empty | No OpenRouter/Groq credential or model | Attach credential; Merge still fills defaults |
+| Move fails | Folder not reselected after import | Open Move node → pick Open Tickets / Processed |
 | Silent drop | Auto-reply / self-sent filter | Check Extract `dropReason` |
 
 ---
 
 ## Security
 
-- Use OAuth credentials only; do not paste secrets into workflow JSON  
+- Use OAuth / API-key credentials only; do not paste secrets into workflow JSON  
 - Restrict SharePoint/OneDrive file to the IT Support group  
-- AuditLog stores subject + IDs; full bodies live on the Tickets sheet — treat as sensitive  
+- AuditLog stores subject + IDs; full bodies and AI summaries live on Tickets — treat as sensitive  
 - Limit who can edit the Main workflow  
-
----
-
-## Requirement coverage (TicketingPrompt.md)
-
-| Requirement | How addressed |
-|-------------|---------------|
-| Outlook Trigger only | Main starts with `microsoftOutlookTrigger` |
-| Concurrent safety | Concurrency = 1 + ConversationID idempotency |
-| Fresh vs follow-up | ConversationID lookup |
-| Folder strategy | Filtered / NeedsReview / Processed/Open Tickets (+ manual Pending/Closed/Archive) |
-| Ticket ID `NGI-ddmmyy-XXXX` | Generate + uniqueness loop |
-| Auto ack in thread | ReplyAll HTML |
-| CC preserved | ReplyAll + `CCEmails` column |
-| Excel storage | Full column set in `ITTickets` |
-| Follow-ups no new ticket | Exists branch → move only |
-| Error handling | Error Notifier + NeedsReview + retries on Outlook/Excel nodes |
-| Duplicate prevention | ConversationID + move out of Inbox + concurrency 1 |
-| Excel workbook / validation / dashboard | `generate_it_support_workbook.py` |
-| Maintainable single flow | ~20 logic nodes, linear, documented here |
 
 ---
 
 ## Import order
 
-1. Generate / upload Excel workbook  
-2. Import & activate **Error Notifier**  
-3. Import **Main**  
-4. Reselect folders + Excel resources  
-5. Wire Error Workflow + concurrency 1  
-6. Activate Main  
-7. Send a test email from a non-support address → confirm ticket row, ack, and folder move  
-8. Reply on the same thread → confirm **no** second ticket  
+1. Generate / upload Excel workbook v2.0  
+2. Create Outlook folders: Open Tickets, Processed  
+3. Import & activate **Error Notifier**  
+4. Import **Main**  
+5. Reselect folders + Excel resources  
+6. Attach OpenRouter (or Groq) credential  
+7. Wire Error Workflow + concurrency 1  
+8. Activate Main  
+9. Send a test email from a non-support address → confirm ticket row, AI columns, ack, and folder move  
+10. Reply on the same thread → confirm **no** second ticket  
+11. (Optional) Simulate reply failure: set `Ack Sent` to `No` on a test row and re-send on the thread → confirm resume ack  
+
+---
+
+## Regenerating artifacts
+
+```bash
+python scripts/generate_it_support_workbook.py
+python scripts/_build_workflows.py
+```

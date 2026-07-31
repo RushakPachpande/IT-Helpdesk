@@ -1,0 +1,100 @@
+{
+  "name": "IT Ticketing - Error Notifier",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "e1-errortrigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const execution = $json;\n\nconst workflowName = execution.workflow?.name || \"Unknown workflow\";\nconst failedNode = execution.execution?.lastNodeExecuted || \"Unknown node\";\nconst errorMessage = execution.execution?.error?.message || \"No error message available\";\nconst executionUrl = execution.execution?.url || \"\";\nconst timestamp = new Date().toLocaleString(\"en-GB\", { timeZone: \"Asia/Kolkata\" });\n\nconst html = `\n  <div style=\"font-family: 'Segoe UI', Helvetica, Arial, sans-serif; padding: 20px; color: #333;\">\n    <div style=\"max-width: 580px; margin: 0 auto; background: #fff; border: 1px solid #fca5a5; border-radius: 8px; overflow: hidden;\">\n      <div style=\"background-color: #dc2626; padding: 16px 25px; color: #fff;\">\n        <h2 style=\"margin:0; font-size:18px;\">n8n Workflow Failure Alert</h2>\n      </div>\n      <div style=\"padding: 20px 25px;\">\n        <p><strong>Workflow:</strong> ${workflowName}</p>\n        <p><strong>Failed Node:</strong> ${failedNode}</p>\n        <p><strong>Error:</strong> ${errorMessage}</p>\n        <p><strong>Time:</strong> ${timestamp}</p>\n        ${executionUrl ? `<p><a href=\"${executionUrl}\">View execution details</a></p>` : \"\"}\n        <p style=\"font-size:13px; color:#64748b;\">\n          The IT Support Ticketing Main workflow failed. Check the failed execution.\n          If a ticket row was written with Ack Sent=No, the next run for the same Conversation ID\n          will resume the acknowledgement email (no duplicate ticket).\n          Manually move the email out of Inbox only if it remains stuck after recovery.\n        </p>\n      </div>\n    </div>\n  </div>\n`;\n\nreturn [{\n  json: {\n    subject: `[ALERT] IT Ticketing Workflow Failed - ${workflowName}`,\n    htmlBody: html\n  }\n}];\n"
+      },
+      "id": "e2-format",
+      "name": "Format Error Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "toRecipients": "it-admin@nextgeninnov8.com",
+        "subject": "={{ $json.subject }}",
+        "bodyContent": "={{ $json.htmlBody }}",
+        "bodyContentType": "html",
+        "options": {}
+      },
+      "id": "e3-send",
+      "name": "Send Alert Email to IT Admin",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        520,
+        300
+      ],
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "7uyBvNQLSjMWB4rC",
+          "name": "IT Support Microsoft Outlook"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## How to wire this up\n1. Import & activate this workflow first.\n2. Open **IT Ticketing - Main** → Settings → Error Workflow → select this workflow.\n3. Update `toRecipients` in Send Alert Email to your real admin address.\n\nn8n runs this automatically when any Main node throws an unhandled error.",
+        "height": 220,
+        "width": 400
+      },
+      "id": "e4-note",
+      "name": "Sticky Note - Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        40
+      ]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Error Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error Details": {
+      "main": [
+        [
+          {
+            "node": "Send Alert Email to IT Admin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "it-ticketing-error-notifier-v1"
+  }
+}
