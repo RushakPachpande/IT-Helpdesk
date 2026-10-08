@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "n8n-mcp": {
+      "type": "http",
+      "url": "https://n8n.nextgeninnov8.com/mcp-server/http",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwYTA5MWI4MC03ZDMxLTQwNmQtYjk5Ny1iNjUyZmJlZGFkM2QiLCJpc3MiOiJuOG4iLCJhdWQiOiJtY3Atc2VydmVyLWFwaSIsImp0aSI6ImNjYzFiZjU4LWFkMDUtNDlkMi05OWFjLTVlNjI5MmI4M2NjNCIsImlhdCI6MTc5MTQ1NTAyM30.DQA_fW7rJhQDSBdbK_9YXrLlbyGORozBGBJ9esGLoBY"
+      }
+    }
+  }
+}
