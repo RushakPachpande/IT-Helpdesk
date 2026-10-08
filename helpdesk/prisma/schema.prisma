@@ -1,0 +1,313 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../apps/api/src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  EMPLOYEE
+  AGENT
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  PLACEHOLDER
+}
+
+enum TicketStatus {
+  NEEDS_REVIEW
+  NEW
+  OPEN
+  IN_PROGRESS
+  WAITING_ON_REQUESTER
+  RESOLVED
+  CLOSED
+}
+
+enum TicketSource {
+  WEB
+  EMAIL
+}
+
+enum MessageKind {
+  PUBLIC
+  INTERNAL_NOTE
+  SYSTEM
+}
+
+enum MailProvider {
+  MICROSOFT
+  GOOGLE
+  IMAP
+}
+
+enum MailboxStatus {
+  CONNECTED
+  ERROR
+  RECONNECT_REQUIRED
+  DISCONNECTED
+}
+
+enum OutboundStatus {
+  QUEUED
+  SENT
+  FAILED
+  SUPPRESSED
+}
+
+model User {
+  id                 String     @id @default(uuid())
+  email              String     @unique
+  name               String
+  role               Role       @default(EMPLOYEE)
+  status             UserStatus @default(ACTIVE)
+  department         String?
+  passwordHash       String?
+  mustChangePassword Boolean    @default(true)
+  failedLoginCount   Int        @default(0)
+  lockedUntil        DateTime?
+  lastLoginAt        DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  sessions         Session[]
+  requestedTickets Ticket[]        @relation("requester")
+  assignedTickets  Ticket[]        @relation("assignee")
+  messages         TicketMessage[]
+  auditLogs        AuditLog[]
+}
+
+model Session {
+  id         String   @id @default(uuid())
+  tokenHash  String   @unique
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  ip         String?
+  userAgent  String?
+
+  @@index([userId])
+}
+
+model AllowedDomain {
+  id                String   @id @default(uuid())
+  domain            String   @unique
+  includeSubdomains Boolean  @default(false)
+  createdAt         DateTime @default(now())
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  tickets   Ticket[]
+}
+
+model Priority {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  rank      Int      @default(0)
+  color     String   @default("#64748b")
+  isDefault Boolean  @default(false)
+  active    Boolean  @default(true)
+  tickets   Ticket[]
+}
+
+model Ticket {
+  id                String       @id @default(uuid())
+  ticketNumber      String       @unique
+  subject           String
+  description       String
+  status            TicketStatus @default(NEW)
+  source            TicketSource @default(WEB)
+  categoryId        String?
+  category          Category?    @relation(fields: [categoryId], references: [id])
+  priorityId        String?
+  priority          Priority?    @relation(fields: [priorityId], references: [id])
+  requesterId       String?
+  requester         User?        @relation("requester", fields: [requesterId], references: [id])
+  requesterEmail    String
+  requesterName     String
+  ccEmails          String[]     @default([])
+  assigneeId        String?
+  assignee          User?        @relation("assignee", fields: [assigneeId], references: [id])
+  needsReviewReason String?
+  aiSummary         String?
+  aiPriority        String?
+  resolutionNotes   String?
+  resolvedAt        DateTime?
+  closedAt          DateTime?
+  lastActivityAt    DateTime     @default(now())
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  messages    TicketMessage[]
+  attachments Attachment[]
+  threadLinks EmailThreadLink[]
+  outbound    OutboundEmail[]
+
+  @@index([status])
+  @@index([requesterId])
+  @@index([assigneeId])
+  @@index([requesterEmail])
+}
+
+model TicketMessage {
+  id                String       @id @default(uuid())
+  ticketId          String
+  ticket            Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId          String?
+  author            User?        @relation(fields: [authorId], references: [id])
+  authorName        String?
+  authorEmail       String?
+  kind              MessageKind  @default(PUBLIC)
+  source            TicketSource @default(WEB)
+  bodyText          String
+  providerMessageId String?
+  internetMessageId String?
+  createdAt         DateTime     @default(now())
+
+  attachments Attachment[]
+
+  @@index([ticketId, createdAt])
+}
+
+model Attachment {
+  id          String         @id @default(uuid())
+  ticketId    String
+  ticket      Ticket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  messageId   String?
+  message     TicketMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  fileName    String
+  mimeType    String
+  sizeBytes   Int
+  sha256      String
+  storagePath String
+  inline      Boolean        @default(false)
+  createdAt   DateTime       @default(now())
+
+  @@index([ticketId])
+}
+
+model Mailbox {
+  id             String        @id @default(uuid())
+  provider       MailProvider
+  address        String
+  displayName    String?
+  status         MailboxStatus @default(CONNECTED)
+  active         Boolean       @default(true)
+  // AES-256-GCM encrypted JSON (provider tokens / MSAL cache)
+  tokenData      String
+  syncCursor     String?
+  syncStartAt    DateTime      @default(now())
+  lastSyncAt     DateTime?
+  lastError      String?
+  shadowMode     Boolean       @default(false)
+  connectedById  String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  threadLinks EmailThreadLink[]
+  processed   ProcessedEmail[]
+  events      MailboxEvent[]
+  outbound    OutboundEmail[]
+
+  @@unique([provider, address])
+}
+
+model MailboxEvent {
+  id        String   @id @default(uuid())
+  mailboxId String
+  mailbox   Mailbox  @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  level     String
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([mailboxId, createdAt])
+}
+
+model EmailThreadLink {
+  id                    String   @id @default(uuid())
+  mailboxId             String
+  mailbox               Mailbox  @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  providerThreadId      String
+  ticketId              String
+  ticket                Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  lastProviderMessageId String?
+  createdAt             DateTime @default(now())
+
+  @@unique([mailboxId, providerThreadId])
+  @@index([ticketId])
+}
+
+model ProcessedEmail {
+  id                String   @id @default(uuid())
+  mailboxId         String
+  mailbox           Mailbox  @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  providerMessageId String
+  internetMessageId String?
+  outcome           String
+  ticketId          String?
+  createdAt         DateTime @default(now())
+
+  @@unique([mailboxId, providerMessageId])
+  @@index([internetMessageId])
+}
+
+model OutboundEmail {
+  id                String         @id @default(uuid())
+  mailboxId         String?
+  mailbox           Mailbox?       @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
+  ticketId          String?
+  ticket            Ticket?        @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  messageId         String?
+  kind              String
+  toEmails          String[]
+  ccEmails          String[]       @default([])
+  subject           String
+  bodyHtml          String
+  attachmentIds     String[]       @default([])
+  status            OutboundStatus @default(QUEUED)
+  attempts          Int            @default(0)
+  lastError         String?
+  providerMessageId String?
+  internetMessageId String?
+  sentAt            DateTime?
+  createdAt         DateTime       @default(now())
+
+  @@index([status])
+  @@index([internetMessageId])
+}
+
+model TicketIdCounter {
+  periodKey String @id
+  value     Int    @default(0)
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+}

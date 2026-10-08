@@ -1,0 +1,46 @@
+{
+  "name": "helpdesk",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @helpdesk/api --filter @helpdesk/web dev",
+    "dev:worker": "pnpm --filter @helpdesk/api dev:worker",
+    "build": "pnpm --filter @helpdesk/web build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:db": "vitest run --config vitest.db.config.ts",
+    "test:e2e": "playwright test",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "argon2": "^0.45.1",
+    "dotenv": "^17.2.3",
+    "pg": "^8.16.3",
+    "prisma": "7.10.0",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^24.10.1",
+    "@types/pg": "^8.15.6",
+    "typescript": "5.9.3",
+    "vitest": "^5.0.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "argon2",
+      "esbuild",
+      "prisma",
+      "@prisma/engines"
+    ]
+  }
+}

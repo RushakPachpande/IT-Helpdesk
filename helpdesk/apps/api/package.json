@@ -1,0 +1,38 @@
+{
+  "name": "@helpdesk/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "dev:worker": "tsx watch src/worker.ts",
+    "start": "tsx src/server.ts",
+    "start:worker": "tsx src/worker.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/helmet": "^13.1.1",
+    "@fastify/multipart": "^10.1.2",
+    "@fastify/rate-limit": "^11.2.0",
+    "@fastify/static": "^10.1.5",
+    "@helpdesk/mail": "workspace:*",
+    "@helpdesk/shared": "workspace:*",
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "argon2": "^0.45.1",
+    "dotenv": "^17.2.3",
+    "fastify": "^5.12.5",
+    "file-type": "^22.1.1",
+    "pg": "^8.16.3",
+    "pg-boss": "^12.37.0",
+    "pino-pretty": "^13.2.0",
+    "socket.io": "^4.8.4",
+    "tsx": "^4.23.15",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/pg": "^8.15.6"
+  }
+}
